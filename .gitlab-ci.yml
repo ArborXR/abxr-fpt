@@ -1,0 +1,16 @@
+stages:
+  - build
+
+image: python:3.9
+
+before_script:
+  - pip install --upgrade pip
+
+build:
+  stage: build
+  script:
+    - pip install .
+    - pip install build
+    - python -m build
+    
+  
