@@ -8,7 +8,7 @@ from setuptools import setup
 
 setup(
     name = 'abxrfieldprovisioningtools',
-    version = '0.3.0',
+    version = '0.4.0',
     packages = ['abxr'],
     entry_points = {
         'console_scripts': [
@@ -17,7 +17,10 @@ setup(
         ]
     },
     install_requires = [
-        'androguard'
+        'androguard',
+        'pyudev',
+        'adafruit-circuitpython-ssd1306',
+        'setuptools'
     ],
     include_package_data=True,
 )
