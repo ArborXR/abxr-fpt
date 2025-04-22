@@ -7,7 +7,7 @@
 from setuptools import setup
 
 setup(
-    name = 'abxrfieldprovisioningtools',
+    name = 'abxrfpt',
     version = '0.4.0',
     packages = ['abxr'],
     entry_points = {
