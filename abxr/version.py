@@ -4,4 +4,4 @@
 #
 
 import pkg_resources
-version = pkg_resources.require("abxrfieldprovisioningtools")[0].version
+version = pkg_resources.require("abxrfpt")[0].version
