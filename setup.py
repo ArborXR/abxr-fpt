@@ -8,7 +8,7 @@ from setuptools import setup
 
 setup(
     name = 'abxrfpt',
-    version = '0.4.1',
+    version = '0.5.0',
     packages = ['abxr'],
     entry_points = {
         'console_scripts': [

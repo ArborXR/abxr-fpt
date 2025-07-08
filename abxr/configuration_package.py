@@ -56,6 +56,8 @@ class ConfigurationPackage:
             path = Path(path)
 
         self.path = path
+        self.version = None
+        self.is_xrdm2 = False
         self.settings = None
         self.zip_file = None
         self.client_apk = None
@@ -76,6 +78,7 @@ class ConfigurationPackage:
         self._find_files()
         self._find_videos()
         self._find_launcher_media()
+        self._find_images()
 
         self._split_obb_packaged_apps_from_apps()
 
@@ -87,12 +90,15 @@ class ConfigurationPackage:
 
     def _load_settings_json(self):
         try:
-            self.settings = json.loads(self.read_settings_json_from_zip().decode('utf-8'))        
+            self.settings = json.loads(self.read_settings_json_from_zip().decode('utf-8'))
+            self.version = self.settings.get("version", None)
+            if self.version == "2.0.0":
+                self.is_xrdm2 = True
         except Exception as e:
             raise Exception(f"Error parsing settings.json: {e}")
         
     def _find_client_apk(self):
-        client_apk = [f for f in self.zip_file.namelist() if 'client/app.xrdm.client-Signed-ArborXR' in f]
+        client_apk = [f for f in self.zip_file.namelist() if 'client/app.xrdm.client' in f]
         
         if len(client_apk) > 1:
             raise Exception("Multiple ArborXR APK files found in the zip file.")
@@ -102,7 +108,7 @@ class ConfigurationPackage:
         self.client_apk = client_apk[0]
 
     def _find_launcher_apk(self):
-        launcher_apk = [f for f in self.zip_file.namelist() if 'launcher/app.xrdm.launcher-Signed-ArborXR' in f]
+        launcher_apk = [f for f in self.zip_file.namelist() if 'launcher/app.xrdm.launcher' in f]
 
         if len(launcher_apk) > 1:
             raise Exception("Multiple ArborXR APK files found in the zip file.")
@@ -123,6 +129,9 @@ class ConfigurationPackage:
     def _find_launcher_media(self):
         self.launcher_media = [f for f in self.zip_file.namelist() if 'launcher-media/' in f]
 
+    def _find_images(self):
+        self.images = [f for f in self.zip_file.namelist() if 'images/' in f]
+
     def _split_obb_packaged_apps_from_apps(self):
         self.obb_packaged_apps = [f for f in self.apps if '.zip' in f]
         self.apps = [f for f in self.apps if '.zip' not in f]
@@ -136,7 +145,10 @@ class ConfigurationPackage:
 
     def device_group(self):
         try:
-            return self.settings["deviceGroup"]
+            if self.is_xrdm2:
+                return self.settings["group"]
+            else:
+                return self.settings["deviceGroup"]
         except Exception as e:
             print("Error getting device group: {e}")
             return None
@@ -150,7 +162,10 @@ class ConfigurationPackage:
         
     def model_names(self):
         try:
-            return self.settings["deviceModel"]["modelNames"]
+            if self.is_xrdm2:
+                return self.settings["deviceModel"]["enrollmentIdentifiers"]
+            else:
+                return self.settings["deviceModel"]["modelNames"]
         except Exception as e:
             print("Error getting device model names: {e}")
             return None

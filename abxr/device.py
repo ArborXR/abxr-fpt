@@ -37,6 +37,9 @@ class DeviceRemoveDeviceOwnerException(Exception):
 class DeviceConfigureApiTokenException(Exception):
     pass
 
+class DeviceConfigurationObjectException(Exception):
+    pass
+
 
 
 class Version:
@@ -69,6 +72,49 @@ class SystemVersion:
         except Exception:
             return None
 
+class BootsrapViaAuthenticationToken:
+    def __init__(self, token, group, configurations):
+        self.secret_value = None
+        self.device_id = None
+        self.enrollment_method = None
+        self.configurations = configurations
+        self.token = token
+        self.group = group
+
+    def __repr__(self):
+        return f"BootstrapViaAuthenticationToken(token={self.token})"
+    
+   # adb shell dumpsys activity service xrdm.adb.AdbService 
+            # '\{
+            #   \"type\":\"BootstrapViaAuthenticationToken\",
+            #   \"input\":\{
+            #       \"token\":\{
+            #           \"secretValue\":\"46261\|HQttgqpkbZa02R4XaFP7noe9SGv51n1EGH72AO5cda90c9cb\"
+            #       \},
+            #       \"deviceId\":\"e1eeea37-1356-4718-93aa-ac5eda69dda2\",
+            #       \"enrollmentMethod\":\"admin\",
+            #       \"configurations\":\{
+            #           \"WifiNetworks\":\{
+            #               \"networks\":[]
+            #           \}
+            #       \}
+            #   \}
+            # \}'
+
+    def to_dict(self):
+        return {
+            "type": "BootstrapViaAuthenticationToken",
+            "input": {
+                "token": {
+                    "secretValue": self.secret_value
+                },
+                "deviceId": self.device_id,
+                "enrollmentMethod": "admin",
+                "configurations": self.configurations 
+            }
+        }
+    
+    
 
 class Device:
     def __init__(self, serial):
@@ -313,7 +359,10 @@ class Device:
         if type(config_pkg) == str|Path:
             config_pkg = ConfigurationPackage(config_pkg)
 
-        client_settings_file_location = "/sdcard/ArborXR/Settings/settings.json"
+        if config_pkg.is_xrdm2:
+            client_settings_file_location = "/sdcard/Setup/settings.json"
+        else:
+            client_settings_file_location = "/sdcard/ArborXR/Settings/settings.json"
 
         for app in config_pkg.apps:
             with tempfile.TemporaryDirectory() as extract_path:
@@ -341,17 +390,34 @@ class Device:
             with tempfile.TemporaryDirectory() as extract_path:
                 item = config_pkg.extract_item(launcher_media, extract_path)
                 target_file_location = launcher_media.split("/launcher-media")[-1]
-                print(f"/sdcard/launcher-media{target_file_location}")
                 self.push_file(item, f"/sdcard/launcher-media{target_file_location}")
+
+        for images in config_pkg.images:
+            with tempfile.TemporaryDirectory() as extract_path:
+                item - config_pkg.extract_item(images, extract_path)
+                target_file_location = images.split("/images")[-1]
+                self.push_file(item, f"/sdcard/ArborXR/images{target_file_location}")
+        
 
         with tempfile.NamedTemporaryFile() as f:
             f.write(config_pkg.read_settings_json_from_zip())
             f.flush()
             self.push_file(f.name, client_settings_file_location)
-            
-        proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "broadcast", "-n", "app.xrdm.client/.SetupDeviceReceiver", "-a", "CONFIGURE_DEVICE", "-e", "ClientSettingsFile", client_settings_file_location])
-        if proc.returncode:
-            raise DeviceConfigureException("Failed to configure device with settings.json")
+        
+        if config_pkg.is_xrdm2:
+            command = {
+                "type": "BootstrapViaJsonFile",
+                "input": {
+                    "file": client_settings_file_location
+                }
+            }
+            proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "activity", "service", "xrdm.adb.AdbService",  f"'''{command}'''"])
+            if proc.returncode:
+                raise DeviceConfigureException("Failed to configure device with settings.json")
+        else:
+            proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "broadcast", "-n", "app.xrdm.client/.SetupDeviceReceiver", "-a", "CONFIGURE_DEVICE", "-e", "ClientSettingsFile", client_settings_file_location])
+            if proc.returncode:
+                raise DeviceConfigureException("Failed to configure device with settings.json")
 
     def force_stop_and_sleep(self, package_name, seconds):
         proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "force-stop", package_name])
@@ -422,16 +488,30 @@ class Device:
 
         settings = config_pkg.settings
 
-        api_token_auth = {}
-        api_token_auth["apiToken"] = settings["apiToken"]
-        api_token_auth["deviceGroup"] = {}
-        api_token_auth["deviceGroup"]["id"] = settings["deviceGroup"]["id"]
-        api_token_auth_json = json.dumps(api_token_auth)
+        if settings.is_xrdm2:
+            token = settings["token"]
+            group = settings["group"]
+            configurations = settings["configurations"]
 
-        proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "broadcast", "-n", "app.xrdm.client/.SetupDeviceReceiver", "-a", "CONFIGURE_API_TOKEN", "-e", "ApiTokenAuth", f"'''{api_token_auth_json}'''"])
-        if proc.returncode:
-            raise DeviceConfigureApiTokenException("Failed to configure device with API token authentication.")
+            token = BootsrapViaAuthenticationToken(token, group, configurations)
 
+            token_json = json.dumps(token.to_dict())
+
+            proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "activity", "service", "xrdm.adb.AdbService",  f"'''{token_json}'''"])
+
+            if proc.returncode:
+                raise DeviceConfigurationObjectException("Failed to configuration device with object from config package")
+        else:
+            api_token_auth = {}
+            api_token_auth["apiToken"] = settings["apiToken"]
+            api_token_auth["deviceGroup"] = {}
+            api_token_auth["deviceGroup"]["id"] = settings["deviceGroup"]["id"]
+            api_token_auth_json = json.dumps(api_token_auth)
+
+            proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "broadcast", "-n", "app.xrdm.client/.SetupDeviceReceiver", "-a", "CONFIGURE_API_TOKEN", "-e", "ApiTokenAuth", f"'''{api_token_auth_json}'''"])
+            if proc.returncode:
+                raise DeviceConfigureApiTokenException("Failed to configure device with API token authentication.")
+            
     def get_installed_version(self, package_name):
         result = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "package", package_name], capture_output=True, text=True)
         if result.returncode != 0:
