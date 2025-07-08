@@ -14,6 +14,7 @@ import zipfile
 from abxr.apk import get_package_name
 
 from abxr.configuration_package import AbxrClientApk, ConfigurationPackage
+from abxr.device_commands import BootsrapViaAuthenticationToken, BootstrapViaJsonFile, RemoveDeviceOwnership
 
 # create custom exception for apk install failure
 class DeviceInstallException(Exception):
@@ -70,50 +71,7 @@ class SystemVersion:
             version_obj = Version(sanitized_version)
             return version_obj
         except Exception:
-            return None
-
-class BootsrapViaAuthenticationToken:
-    def __init__(self, token, group, configurations):
-        self.secret_value = None
-        self.device_id = None
-        self.enrollment_method = None
-        self.configurations = configurations
-        self.token = token
-        self.group = group
-
-    def __repr__(self):
-        return f"BootstrapViaAuthenticationToken(token={self.token})"
-    
-   # adb shell dumpsys activity service xrdm.adb.AdbService 
-            # '\{
-            #   \"type\":\"BootstrapViaAuthenticationToken\",
-            #   \"input\":\{
-            #       \"token\":\{
-            #           \"secretValue\":\"46261\|HQttgqpkbZa02R4XaFP7noe9SGv51n1EGH72AO5cda90c9cb\"
-            #       \},
-            #       \"deviceId\":\"e1eeea37-1356-4718-93aa-ac5eda69dda2\",
-            #       \"enrollmentMethod\":\"admin\",
-            #       \"configurations\":\{
-            #           \"WifiNetworks\":\{
-            #               \"networks\":[]
-            #           \}
-            #       \}
-            #   \}
-            # \}'
-
-    def to_dict(self):
-        return {
-            "type": "BootstrapViaAuthenticationToken",
-            "input": {
-                "token": {
-                    "secretValue": self.secret_value
-                },
-                "deviceId": self.device_id,
-                "enrollmentMethod": "admin",
-                "configurations": self.configurations 
-            }
-        }
-    
+            return None    
     
 
 class Device:
@@ -378,12 +336,18 @@ class Device:
             with tempfile.TemporaryDirectory() as extract_path:
                 item = config_pkg.extract_item(file, extract_path)
                 target_file_location = file.split("/files")[-1]
+                if target_file_location.startswith("/~"):
+                    target_file_location = target_file_location.split("/~")[-1]
+           
                 self.push_file(item, target_file_location)
 
         for video in config_pkg.videos:
             with tempfile.TemporaryDirectory() as extract_path:
                 item = config_pkg.extract_item(video, extract_path)
                 target_file_location = video.split("/videos")[-1]
+                if target_file_location.startswith("/~"):
+                    target_file_location = target_file_location.split("/~")[-1]
+                    
                 self.push_file(item, f"/sdcard/ArborXR/videos{target_file_location}")
 
         for launcher_media in config_pkg.launcher_media:
@@ -392,11 +356,12 @@ class Device:
                 target_file_location = launcher_media.split("/launcher-media")[-1]
                 self.push_file(item, f"/sdcard/launcher-media{target_file_location}")
 
+        # Config package v2 only
         for images in config_pkg.images:
             with tempfile.TemporaryDirectory() as extract_path:
                 item - config_pkg.extract_item(images, extract_path)
                 target_file_location = images.split("/images")[-1]
-                self.push_file(item, f"/sdcard/ArborXR/images{target_file_location}")
+                self.push_file(item, f"/sdcard/ArborXR/Media{target_file_location}")
         
 
         with tempfile.NamedTemporaryFile() as f:
@@ -405,13 +370,10 @@ class Device:
             self.push_file(f.name, client_settings_file_location)
         
         if config_pkg.is_xrdm2:
-            command = {
-                "type": "BootstrapViaJsonFile",
-                "input": {
-                    "file": client_settings_file_location
-                }
-            }
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "activity", "service", "xrdm.adb.AdbService",  f"'''{command}'''"])
+            command = BootstrapViaJsonFile(client_settings_file_location)
+            command_json = json.dumps(command.to_dict())
+
+            proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "activity", "service", "xrdm.adb.AdbService",  f"'''{command_json}'''"])
             if proc.returncode:
                 raise DeviceConfigureException("Failed to configure device with settings.json")
         else:
@@ -473,6 +435,26 @@ class Device:
             print("Device owner removal complete.")
             return True
         raise DeviceRemoveDeviceOwnerException("Failed to remove device owner.")
+    
+    def remove_device_owner_v2(self):
+        command = RemoveDeviceOwnership()
+        command_json = json.dumps(command.to_dict())
+
+        proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "activity", "service", "xrdm.adb.AdbService",  f"'''{command_json}'''"])
+        max_wait_sec = 10
+        wait_sec = 0
+        if proc.returncode == 0:
+            while True and wait_sec < max_wait_sec:
+                proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "device_policy", "|", "grep", "\"app.xrdm.client/.AdminReceiver\""], capture_output=True, text=True)
+                if proc.stdout == "":
+                    break
+                print("Waiting for device owner removal...")
+                time.sleep(1)
+                wait_sec += 1
+            
+            print("Device owner removal complete.")
+            return True
+        raise DeviceRemoveDeviceOwnerException("Failed to remove device owner.")
 
     def uninstall_apk(self, package_name):
         proc = subprocess.run(["adb", "-s", self.serial, "uninstall", package_name], capture_output=True, text=True)
@@ -493,11 +475,11 @@ class Device:
             group = settings["group"]
             configurations = settings["configurations"]
 
-            token = BootsrapViaAuthenticationToken(token, group, configurations)
+            command = BootsrapViaAuthenticationToken(token, group, configurations)
 
-            token_json = json.dumps(token.to_dict())
+            command_json = json.dumps(command.to_dict())
 
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "activity", "service", "xrdm.adb.AdbService",  f"'''{token_json}'''"])
+            proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "activity", "service", "xrdm.adb.AdbService",  f"'''{command_json}'''"])
 
             if proc.returncode:
                 raise DeviceConfigurationObjectException("Failed to configuration device with object from config package")

@@ -186,7 +186,10 @@ def provision(args):
                         #
                         if device.abxr_client_version() != client_apk.version or args.force_upgrade:
                             if device.is_packaged_installed(AbxrClientApk.PACKAGE_NAME):
-                                device.remove_device_owner()
+                                if package.is_xrdm2:
+                                    device.remove_device_owner_v2()
+                                else:
+                                    device.remove_device_owner()
                                 device.uninstall_apk(AbxrClientApk.PACKAGE_NAME)
                             
                             device.install_apk(client_apk.path)

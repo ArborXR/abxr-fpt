@@ -4,6 +4,7 @@
 #
 
 import json
+import re
 from pathlib import Path
 import zipfile
 
@@ -25,8 +26,12 @@ class AbxrClientApk:
     def _load_version(self):
         self.version = self.get_client_version_from_filename(self.path)
 
-    def get_client_version_from_filename(self, apk_filename):
-        return apk_filename.name.split('-')[-1].split('.apk')[0]
+    def get_client_version_from_filename(self, filename):
+        pattern = r'(\d{4}\.\d{1,2}\.\d+)'
+        match = re.search(pattern, str(filename))
+        if match:
+            return match.group(1)
+        return None
     
 class AbxrLauncherApk:
     PACKAGE_NAME = "app.xrdm.launcher"
@@ -47,7 +52,11 @@ class AbxrLauncherApk:
         self.version = self.get_launcher_version_from_filename(self.path)
 
     def get_launcher_version_from_filename(self, apk_filename):
-        return apk_filename.name.split('-')[-1].split('.apk')[0]
+        pattern = r'(\d{4}\.\d{1,2}\.\d+)'
+        match = re.search(pattern, str(apk_filename))
+        if match:
+            return match.group(1)
+        return None
 
 
 class ConfigurationPackage:
