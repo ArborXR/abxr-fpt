@@ -94,6 +94,7 @@ class ConfigurationPackage:
             self.version = self.settings.get("version", None)
             if self.version == "2.0.0":
                 self.is_xrdm2 = True
+                print("Found a v2 config package")
         except Exception as e:
             raise Exception(f"Error parsing settings.json: {e}")
         

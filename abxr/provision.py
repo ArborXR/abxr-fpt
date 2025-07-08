@@ -79,7 +79,7 @@ def get_configuration_packages(args):
                     print("Automatic device package selection is unavailable.")
                     return []
 
-                print(f"Configuration package for {package.model_name()}, {package.path.name} ({package.device_group()['title']}), created: {package.created_at()}")
+                print(f"Configuration package for {package.model_name()}, {package.path.name}, created: {package.created_at()}")
                 packages.append(package)
                 models.append(package.model_name())
             except Exception as e:
