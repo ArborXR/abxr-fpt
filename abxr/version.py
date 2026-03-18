@@ -3,5 +3,11 @@
 # Released under the MIT License. See LICENSE file for details.
 #
 
-import pkg_resources
-version = pkg_resources.require("abxrfpt")[0].version
+def _get_version():
+    try:
+        from importlib.metadata import version
+        return version("abxrfpt")
+    except Exception:
+        return "unknown"
+
+version = _get_version()

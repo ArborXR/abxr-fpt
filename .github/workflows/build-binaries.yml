@@ -1,0 +1,83 @@
+name: Build Platform Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: abxr-provision-linux-x64
+            binary_ext: ""
+          - os: macos-latest
+            artifact_name: abxr-provision-macos-arm64
+            binary_ext: ""
+          - os: macos-13
+            artifact_name: abxr-provision-macos-x64
+            binary_ext: ""
+          - os: windows-latest
+            artifact_name: abxr-provision-windows-x64
+            binary_ext: ".exe"
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download platform tools (adb + aapt2)
+        run: python scripts/download_platform_tools.py
+
+      - name: Install package and build deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install --no-deps -e .
+        # --no-deps avoids installing pyudev/adafruit on Windows/macOS
+        # the package itself is installed so importlib.metadata can find version
+
+      - name: Build binary
+        run: pyinstaller pyinstaller/abxr-provision.spec
+        shell: bash
+
+      - name: Smoke test
+        run: ./dist/abxr-provision${{ matrix.binary_ext }} --help
+        shell: bash
+
+      - name: Rename artifact
+        run: mv dist/abxr-provision${{ matrix.binary_ext }} dist/${{ matrix.artifact_name }}${{ matrix.binary_ext }}
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.artifact_name }}${{ matrix.binary_ext }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Attach binaries to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            abxr-provision-linux-x64/abxr-provision-linux-x64
+            abxr-provision-macos-arm64/abxr-provision-macos-arm64
+            abxr-provision-macos-x64/abxr-provision-macos-x64
+            abxr-provision-windows-x64/abxr-provision-windows-x64.exe
+          generate_release_notes: true

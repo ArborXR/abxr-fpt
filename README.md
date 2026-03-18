@@ -53,9 +53,23 @@ This all happens in a headless manner, but once the device is provisioned the FP
 
 Currently XR devices require USB power injection due to the FPD HW not being able to supply enough current. Please use the included wall outlet and connector.
 
+## Raspberry Pi Setup
+
+The Raspberry Pi workflow requires `adb` and `aapt2` to be available on PATH. Install them via the Android SDK platform-tools and build-tools:
+
+```sh
+# Install adb (platform-tools)
+sudo apt install android-tools-adb
+
+# Install aapt2 (build-tools) — or download from Google's Android SDK repository
+sudo apt install aapt
+```
+
+Alternatively, download the latest platform-tools and build-tools from [Google's Android SDK](https://developer.android.com/tools/releases/platform-tools) and add them to your PATH.
+
 ## Development Environment Setup
 
-Python 3.x is required. 
+Python 3.x is required.
 
 1. Clone the repository:
 

@@ -17,10 +17,8 @@ setup(
         ]
     },
     install_requires = [
-        'androguard',
         'pyudev',
         'adafruit-circuitpython-ssd1306',
-        'setuptools'
     ],
     include_package_data=True,
 )

@@ -24,10 +24,18 @@ from abxr.device import Device, \
                         DeviceRemoveDeviceOwnerException, \
                         DeviceConfigureApiTokenException
 from abxr.display import display
+from abxr.tools import get_tool_path
 from abxr.version import version
 
+ADB = get_tool_path('adb')
 
-ASSETS_PATH = os.environ.get("ABXR_ASSETS_PATH", Path.home() / "abxr")
+
+def _default_assets_path():
+    if getattr(sys, 'frozen', False):
+        return Path.cwd()
+    return Path.home() / "abxr"
+
+ASSETS_PATH = os.environ.get("ABXR_ASSETS_PATH", _default_assets_path())
 CONFIG_PACKAGE_PATH = ASSETS_PATH / Path("configuration-packages")
 CLIENT_OVERRIDE_PATH = ASSETS_PATH / Path("client")
 
@@ -46,7 +54,7 @@ def get_client_apk_override(args):
 
 
 def get_connected_devices(args):
-    result = subprocess.run(["adb", "devices"], capture_output=True, text=True)
+    result = subprocess.run([ADB, "devices"], capture_output=True, text=True)
     lines = result.stdout.strip().split("\n")[1:]
     serial_numbers = [line.split("\t")[0] for line in lines if "device" in line]
 
@@ -131,7 +139,7 @@ def provision(args):
         print("No configuration packages found.")
         display.write("No configuration packages found.")
         if not hotplug:
-            exit(0)
+            sys.exit(0)
 
     number_of_config_packages = len(packages)
 
@@ -153,7 +161,7 @@ def provision(args):
             print("No devices connected.")
             display.write("No devices connected.", wait=5)
             if not hotplug:
-                exit(0)
+                sys.exit(0)
             continue
 
         for device in devices:
@@ -268,7 +276,7 @@ def provision(args):
             display.write(["No more devices", "to provision."], wait=2)
             
         if not hotplug:
-            exit(0)
+            sys.exit(0)
 
 
 def main():
@@ -281,10 +289,10 @@ def main():
     parser.add_argument("-l", "--list-connected-devices", help="List connected devices", action="store_true")
     args = parser.parse_args()
 
-    if not Path(ASSETS_PATH).exists():
+    if not getattr(sys, 'frozen', False) and not Path(ASSETS_PATH).exists():
         parser.print_usage()
         print(f"Error: ABXR_ASSETS_PATH is not set to a valid path: {ASSETS_PATH}")
-        exit(1)
+        sys.exit(1)
 
     if platform.system() == "Linux":        
         import pyudev
@@ -305,7 +313,7 @@ def main():
         devices = get_connected_devices(args)
         for device in devices:
             print(device)
-        exit(0)
+        sys.exit(0)
 
     provision(args)
 

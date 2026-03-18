@@ -12,6 +12,9 @@ import tempfile
 import zipfile
 
 from abxr.apk import get_package_name
+from abxr.tools import get_tool_path
+
+ADB = get_tool_path('adb')
 
 from abxr.configuration_package import AbxrClientApk, ConfigurationPackage
 from abxr.device_commands import BootsrapViaAuthenticationToken, BootstrapViaJsonFile, RemoveDeviceOwnership
@@ -108,7 +111,7 @@ class Device:
         return "Magic Leap 2" in self.model_name
     
     def prop(self, prop_name):
-        result = subprocess.run(["adb", "-s", self.serial, "shell", "getprop", prop_name], capture_output=True, text=True)
+        result = subprocess.run([ADB, "-s", self.serial, "shell", "getprop", prop_name], capture_output=True, text=True)
         return result.stdout.strip()
 
     def _load_manufacturer_name(self):
@@ -146,7 +149,7 @@ class Device:
         return False
     
     def mkdir(self, path):
-        proc = subprocess.run(["adb", "-s", self.serial, "shell", "mkdir", "-p", path])
+        proc = subprocess.run([ADB, "-s", self.serial, "shell", "mkdir", "-p", path])
         if proc.returncode:
             raise Exception(f"Failed to create directory {path} on device {self.serial}")
     
@@ -186,49 +189,49 @@ class Device:
             raise DeviceInstallException(f"non-APK file. {package_name}")
 
         print(f"Installing APK: {package_name}")
-        proc = subprocess.run(["adb", "-s", self.serial, "install", "-r", "-t", "-g", package_name], capture_output=True, text=True)
+        proc = subprocess.run([ADB, "-s", self.serial, "install", "-r", "-t", "-g", package_name], capture_output=True, text=True)
         if proc.returncode:
             raise DeviceInstallException(f"Failed to install {package_name} on device {self.serial} - {proc.stderr}")
         
     def push_file(self, local_file, remote_file):
-        proc = subprocess.run(["adb", "-s", self.serial, "push", local_file, remote_file])
+        proc = subprocess.run([ADB, "-s", self.serial, "push", local_file, remote_file])
         if proc.returncode:
             raise DeviceInstallException(f"Failed to push {local_file} to {remote_file} on device {self.serial}")
         
     def set_google_play_protect(self, enable):
         if enable:
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "settings", "put", "global", "verifier_verify_adb_installs", "1", "&&", "settings", "put", "global", "package_verifier_enable", "1"])
+            proc = subprocess.run([ADB, "-s", self.serial, "shell", "settings", "put", "global", "verifier_verify_adb_installs", "1", "&&", "settings", "put", "global", "package_verifier_enable", "1"])
         else:
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "settings", "put", "global", "verifier_verify_adb_installs", "0", "&&", "settings", "put", "global", "package_verifier_enable", "0"])
+            proc = subprocess.run([ADB, "-s", self.serial, "shell", "settings", "put", "global", "verifier_verify_adb_installs", "0", "&&", "settings", "put", "global", "package_verifier_enable", "0"])
         
         if proc.returncode:
             raise Exception("Failed to toggle Google Play Protect.")
         
     def set_quest_sleep_enabled(self, enable):
         if enable:
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "broadcast", "-a", "com.oculus.vrpowermanager.automation_disable", "&&", "svc", "power", "stayon", "false"])
+            proc = subprocess.run([ADB, "-s", self.serial, "shell", "am", "broadcast", "-a", "com.oculus.vrpowermanager.automation_disable", "&&", "svc", "power", "stayon", "false"])
         else:
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "svc", "power", "stayon", "true", "&&", "am", "broadcast", "-a", "com.oculus.vrpowermanager.prox_close"])   
+            proc = subprocess.run([ADB, "-s", self.serial, "shell", "svc", "power", "stayon", "true", "&&", "am", "broadcast", "-a", "com.oculus.vrpowermanager.prox_close"])   
         
         if proc.returncode:
             raise Exception("Failed to toggle Quest sleep.")
         
     def set_quest_guardian_enabled(self, enable):
         if enable:
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "setprop", "debug.oculus.guardian_pause", "0"])
+            proc = subprocess.run([ADB, "-s", self.serial, "shell", "setprop", "debug.oculus.guardian_pause", "0"])
         else:
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "setprop", "debug.oculus.guardian_pause", "1"])
+            proc = subprocess.run([ADB, "-s", self.serial, "shell", "setprop", "debug.oculus.guardian_pause", "1"])
         
         if proc.returncode:
             raise Exception("Failed to toggle Guardian.")
     
     def device_sleep(self, seconds):
-        proc = subprocess.run(["adb", "-s", self.serial, "shell", "sleep", str(seconds)])
+        proc = subprocess.run([ADB, "-s", self.serial, "shell", "sleep", str(seconds)])
         if proc.returncode:
             raise Exception("Failed to sleep device.")
         
     def send_keycode_and_sleep(self, keycode, seconds):
-        proc = subprocess.run(["adb", "-s", self.serial, "shell", "input", "keyevent", str(keycode)])
+        proc = subprocess.run([ADB, "-s", self.serial, "shell", "input", "keyevent", str(keycode)])
         if proc.returncode:
             raise Exception("Failed to send keycode.")
         
@@ -236,9 +239,9 @@ class Device:
 
     def set_package_enabled(self, package_name, enable):
         if enable:
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "pm", "disable-user", "--user 0", package_name])
+            proc = subprocess.run([ADB, "-s", self.serial, "shell", "pm", "disable-user", "--user 0", package_name])
         else:
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "pm", "enable", "--user 0", package_name])
+            proc = subprocess.run([ADB, "-s", self.serial, "shell", "pm", "enable", "--user 0", package_name])
         
         if proc.returncode:
             raise Exception(f"Failed to toggle {package_name} enablement.")
@@ -303,7 +306,7 @@ class Device:
             if type(step) == tuple:
                 self.send_keycode_and_sleep(*step)
             elif type(step) == str:
-                proc = subprocess.run(["adb", "-s", self.serial, "shell", step])
+                proc = subprocess.run([ADB, "-s", self.serial, "shell", step])
                 if proc.returncode:
                     raise Exception(f"Failed to execute step: {step}")
             else:
@@ -373,28 +376,28 @@ class Device:
             command = BootstrapViaJsonFile(client_settings_file_location)
             command_json = json.dumps(command.to_dict())
 
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "activity", "service", "xrdm.adb.AdbService",  f"'''{command_json}'''"])
+            proc = subprocess.run([ADB, "-s", self.serial, "shell", "dumpsys", "activity", "service", "xrdm.adb.AdbService",  f"'''{command_json}'''"])
             if proc.returncode:
                 raise DeviceConfigureException("Failed to configure device with settings.json")
         else:
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "broadcast", "-n", "app.xrdm.client/.SetupDeviceReceiver", "-a", "CONFIGURE_DEVICE", "-e", "ClientSettingsFile", client_settings_file_location])
+            proc = subprocess.run([ADB, "-s", self.serial, "shell", "am", "broadcast", "-n", "app.xrdm.client/.SetupDeviceReceiver", "-a", "CONFIGURE_DEVICE", "-e", "ClientSettingsFile", client_settings_file_location])
             if proc.returncode:
                 raise DeviceConfigureException("Failed to configure device with settings.json")
 
     def force_stop_and_sleep(self, package_name, seconds):
-        proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "force-stop", package_name])
+        proc = subprocess.run([ADB, "-s", self.serial, "shell", "am", "force-stop", package_name])
         if proc.returncode:
             raise Exception(f"Failed to force stop {package_name} on device {self.serial}")
         
         self.device_sleep(seconds)
 
     def reboot(self):
-        proc = subprocess.run(["adb", "-s", self.serial, "reboot"])
+        proc = subprocess.run([ADB, "-s", self.serial, "reboot"])
         if proc.returncode:
             raise Exception(f"Failed to reboot device {self.serial}")
 
     def set_device_owner(self):
-        proc = subprocess.run(["adb", "-s", self.serial, "shell", "dpm", "set-device-owner", "app.xrdm.client/.AdminReceiver"], capture_output=True, text=True)
+        proc = subprocess.run([ADB, "-s", self.serial, "shell", "dpm", "set-device-owner", "app.xrdm.client/.AdminReceiver"], capture_output=True, text=True)
         if proc.returncode:
             if "Not allowed to set the device owner because there are already some accounts on the device" in proc.stderr:
                 if self.is_quest():
@@ -415,37 +418,37 @@ class Device:
                 raise DeviceSetDeviceOwnerException("Failed to set device owner." + proc.stderr)
 
     def set_production_environment(self):
-        proc = subprocess.run(["adb", "-s", self.serial, "shell", "echo production > /sdcard/.xrdm-environment"])
+        proc = subprocess.run([ADB, "-s", self.serial, "shell", "echo production > /sdcard/.xrdm-environment"])
         if proc.returncode:
             raise DeviceSetEnvironmentException("Failed to set production environment.")
 
     def remove_device_owner(self):
-        proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "broadcast", "-n", "app.xrdm.client/.AdminRemover", "-a", "REMOVE_DEVICE_OWNER"])
+        proc = subprocess.run([ADB, "-s", self.serial, "shell", "am", "broadcast", "-n", "app.xrdm.client/.AdminRemover", "-a", "REMOVE_DEVICE_OWNER"])
         max_wait_sec = 10
         wait_sec = 0
         if proc.returncode == 0:
             while True and wait_sec < max_wait_sec:
-                proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "device_policy", "|", "grep", "\"app.xrdm.client/.AdminReceiver\""], capture_output=True, text=True)
+                proc = subprocess.run([ADB, "-s", self.serial, "shell", "dumpsys", "device_policy", "|", "grep", "\"app.xrdm.client/.AdminReceiver\""], capture_output=True, text=True)
                 if proc.stdout == "":
                     break
                 print("Waiting for device owner removal...")
                 time.sleep(1)
                 wait_sec += 1
-            
+
             print("Device owner removal complete.")
             return True
         raise DeviceRemoveDeviceOwnerException("Failed to remove device owner.")
-    
+
     def remove_device_owner_v2(self):
         command = RemoveDeviceOwnership()
         command_json = json.dumps(command.to_dict())
 
-        proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "activity", "service", "xrdm.adb.AdbService",  f"'''{command_json}'''"])
+        proc = subprocess.run([ADB, "-s", self.serial, "shell", "dumpsys", "activity", "service", "xrdm.adb.AdbService",  f"'''{command_json}'''"])
         max_wait_sec = 10
         wait_sec = 0
         if proc.returncode == 0:
             while True and wait_sec < max_wait_sec:
-                proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "device_policy", "|", "grep", "\"app.xrdm.client/.AdminReceiver\""], capture_output=True, text=True)
+                proc = subprocess.run([ADB, "-s", self.serial, "shell", "dumpsys", "device_policy", "|", "grep", "\"app.xrdm.client/.AdminReceiver\""], capture_output=True, text=True)
                 if proc.stdout == "":
                     break
                 print("Waiting for device owner removal...")
@@ -457,7 +460,7 @@ class Device:
         raise DeviceRemoveDeviceOwnerException("Failed to remove device owner.")
 
     def uninstall_apk(self, package_name):
-        proc = subprocess.run(["adb", "-s", self.serial, "uninstall", package_name], capture_output=True, text=True)
+        proc = subprocess.run([ADB, "-s", self.serial, "uninstall", package_name], capture_output=True, text=True)
         if proc.returncode:
             raise DeviceUninstallException(f"Failed to uninstall {package_name} on device {self.serial} - {proc.stderr}")
 
@@ -479,7 +482,7 @@ class Device:
 
             command_json = json.dumps(command.to_dict())
 
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "activity", "service", "xrdm.adb.AdbService",  f"'''{command_json}'''"])
+            proc = subprocess.run([ADB, "-s", self.serial, "shell", "dumpsys", "activity", "service", "xrdm.adb.AdbService",  f"'''{command_json}'''"])
 
             if proc.returncode:
                 raise DeviceConfigurationObjectException("Failed to configuration device with object from config package")
@@ -490,12 +493,12 @@ class Device:
             api_token_auth["deviceGroup"]["id"] = settings["deviceGroup"]["id"]
             api_token_auth_json = json.dumps(api_token_auth)
 
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "broadcast", "-n", "app.xrdm.client/.SetupDeviceReceiver", "-a", "CONFIGURE_API_TOKEN", "-e", "ApiTokenAuth", f"'''{api_token_auth_json}'''"])
+            proc = subprocess.run([ADB, "-s", self.serial, "shell", "am", "broadcast", "-n", "app.xrdm.client/.SetupDeviceReceiver", "-a", "CONFIGURE_API_TOKEN", "-e", "ApiTokenAuth", f"'''{api_token_auth_json}'''"])
             if proc.returncode:
                 raise DeviceConfigureApiTokenException("Failed to configure device with API token authentication.")
             
     def get_installed_version(self, package_name):
-        result = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "package", package_name], capture_output=True, text=True)
+        result = subprocess.run([ADB, "-s", self.serial, "shell", "dumpsys", "package", package_name], capture_output=True, text=True)
         if result.returncode != 0:
             return None
         

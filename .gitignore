@@ -161,6 +161,9 @@ cython_debug/
 #.idea/
 .DS_Store
 
+tools/
+
 /assets
 /client
 /configuration-packages
+.omc

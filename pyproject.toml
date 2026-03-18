@@ -10,10 +10,8 @@ readme = "README.md"
 authors = [{ name = "Peter Peterson", email = "peter@arborxr.com" }]
 
 dependencies = [
-    "androguard",
     "pyudev",
     "adafruit-circuitpython-ssd1306",
-    "setuptools"
 ]
 
 [project.scripts]

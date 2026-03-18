@@ -5,6 +5,7 @@
 
 import io
 import time
+from abxr.tools import resource_path
 from abxr.version import version
 
 i2c = None
@@ -21,12 +22,15 @@ def is_raspberrypi():
 
 
 if is_raspberrypi():
-    from board import SCL, SDA
-    import busio
-    import adafruit_ssd1306
+    try:
+        from board import SCL, SDA
+        import busio
+        import adafruit_ssd1306
 
-    i2c = busio.I2C(SCL, SDA)
-    disp = adafruit_ssd1306.SSD1306_I2C(128, 32, i2c)
+        i2c = busio.I2C(SCL, SDA)
+        disp = adafruit_ssd1306.SSD1306_I2C(128, 32, i2c)
+    except Exception:
+        pass
 
 
 class Display:
@@ -42,7 +46,7 @@ class Display:
 
     def __init__(self):
         self.disp = disp
-        self.font_file = "abxr/font5x8.bin"
+        self.font_file = resource_path("font5x8.bin")
         self.line_height = 8
 
     def show(self):
