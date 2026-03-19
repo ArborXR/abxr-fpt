@@ -54,6 +54,34 @@ class Version:
         self.build = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
         self.revision = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
 
+    def _to_tuple(self):
+        return (self.major, self.minor, self.build, self.revision)
+
+    def __eq__(self, other):
+        if isinstance(other, Version):
+            return self._to_tuple() == other._to_tuple()
+        return NotImplemented
+
+    def __lt__(self, other):
+        if isinstance(other, Version):
+            return self._to_tuple() < other._to_tuple()
+        return NotImplemented
+
+    def __le__(self, other):
+        if isinstance(other, Version):
+            return self._to_tuple() <= other._to_tuple()
+        return NotImplemented
+
+    def __gt__(self, other):
+        if isinstance(other, Version):
+            return self._to_tuple() > other._to_tuple()
+        return NotImplemented
+
+    def __ge__(self, other):
+        if isinstance(other, Version):
+            return self._to_tuple() >= other._to_tuple()
+        return NotImplemented
+
     def __repr__(self):
         return f"Version(major={self.major}, minor={self.minor}, build={self.build}, revision={self.revision})"
 
@@ -147,6 +175,13 @@ class Device:
         if self.abxr_client_version() is not None:
             return True
         return False
+
+    def is_abxr_device_owner(self):
+        proc = subprocess.run(
+            [ADB, "-s", self.serial, "shell", "dumpsys", "device_policy"],
+            capture_output=True, text=True
+        )
+        return "app.xrdm.client/.AdminReceiver" in proc.stdout
     
     def mkdir(self, path):
         proc = subprocess.run([ADB, "-s", self.serial, "shell", "mkdir", "-p", path])

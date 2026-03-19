@@ -16,6 +16,7 @@ from threading import Semaphore
 
 from abxr.configuration_package import AbxrClientApk, AbxrLauncherApk, ConfigurationPackage
 from abxr.device import Device, \
+                        Version, \
                         DeviceInstallException, \
                         DeviceUninstallException, \
                         DeviceConfigureException, \
@@ -124,6 +125,27 @@ def usb_event_observer(action, device):
         trigger_device_plug_event()
 
 
+def full_provision_cycle(device, package, client_apk, display):
+    """Remove device owner, uninstall, reinstall client, set device owner."""
+    if device.is_packaged_installed(AbxrClientApk.PACKAGE_NAME):
+        if package.is_xrdm2:
+            device.remove_device_owner_v2()
+        else:
+            device.remove_device_owner()
+        device.uninstall_apk(AbxrClientApk.PACKAGE_NAME)
+
+    device.install_apk(client_apk.path)
+
+    if device.abxr_client_version() != client_apk.version:
+        print(f"Failed to install ArborXR Client APK on {device}")
+        display.write("Failed to install ArborXR Client APK", wait=5)
+        return False
+
+    device.set_device_owner()
+    device.set_production_environment()
+    return True
+
+
 def provision(args):
     print("ArborXR Field Provisioning Tools")
     print(f"Version: {version}")
@@ -190,28 +212,37 @@ def provision(args):
                         device.set_google_play_protect(False)
 
                         #
-                        # if we need to replace the client OR fresh provision    
+                        # Three-path provisioning based on MDM enrollment status
                         #
-                        if device.abxr_client_version() != client_apk.version or args.force_upgrade:
-                            if device.is_packaged_installed(AbxrClientApk.PACKAGE_NAME):
-                                if package.is_xrdm2:
-                                    device.remove_device_owner_v2()
-                                else:
-                                    device.remove_device_owner()
-                                device.uninstall_apk(AbxrClientApk.PACKAGE_NAME)
-                            
-                            device.install_apk(client_apk.path)
-
-                            if device.abxr_client_version() != client_apk.version:
-                                print(f"Failed to install ArborXR Client APK on {device}")
-                                display.write("Failed to install ArborXR Client APK", wait=5)
+                        if args.force_upgrade:
+                            if not full_provision_cycle(device, package, client_apk, display):
                                 continue
 
-                            device.set_device_owner()
-                            device.set_production_environment()    
-                                
+                        elif device.is_abxr_device_owner():
+                            device_version_str = device.abxr_client_version()
+                            if device_version_str is not None and client_apk.version is not None:
+                                device_version = Version(device_version_str)
+                                package_version = Version(client_apk.version)
+                                if device_version < package_version:
+                                    print(f"Device {device} already enrolled as MDM, attempting in-place client upgrade...")
+                                    display.write(["MDM enrolled", "Upgrading client..."])
+                                    try:
+                                        device.install_apk(client_apk.path)
+                                        if device.abxr_client_version() == client_apk.version:
+                                            print(f"Client upgrade successful on {device}")
+                                        else:
+                                            print(f"Client upgrade may not have applied on {device}, continuing...")
+                                    except Exception as e:
+                                        print(f"Client upgrade failed on {device}: {e}, continuing with existing client...")
+                                        display.write(["Upgrade failed", "Continuing..."], wait=2)
+                                else:
+                                    print(f"Device {device} already enrolled with client version {device_version_str} (package: {client_apk.version})")
+                            else:
+                                print(f"Device {device} already enrolled as MDM, skipping client install")
+
                         else:
-                            print(f"Device {device} already has the expected ArborXR Client APK version {client_apk.version}")
+                            if not full_provision_cycle(device, package, client_apk, display):
+                                continue
 
                     if package.launcher_apk:
                         if device.is_packaged_installed(AbxrLauncherApk.PACKAGE_NAME):
