@@ -19,7 +19,7 @@ This project is a collection of tools to help provision and recover Android devi
 
 ## Field Provisioning Device (FPD)
 
-The ArborXR Field Provisioning Device is a headless computer which can deploy XRDM1 Configuration Packages without the need for internet access. 
+The ArborXR Field Provisioning Device is a headless computer which can deploy XRDM Configuration Packages without the need for internet access. 
 
 ### Hardware Information
 
