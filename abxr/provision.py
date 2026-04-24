@@ -22,7 +22,8 @@ from abxr.device import Device, \
                         DeviceSetDeviceOwnerException, \
                         DeviceSetEnvironmentException, \
                         DeviceRemoveDeviceOwnerException, \
-                        DeviceConfigureApiTokenException
+                        DeviceConfigureApiTokenException, \
+                        DeviceWipeClientException
 from abxr.display import display
 from abxr.version import version
 
@@ -187,10 +188,10 @@ def provision(args):
                         if device.abxr_client_version() != client_apk.version or args.force_upgrade:
                             if device.is_packaged_installed(AbxrClientApk.PACKAGE_NAME):
                                 if package.is_xrdm2:
-                                    device.remove_device_owner_v2()
+                                    device.wipe_client()
                                 else:
                                     device.remove_device_owner()
-                                device.uninstall_apk(AbxrClientApk.PACKAGE_NAME)
+                                    device.uninstall_apk(AbxrClientApk.PACKAGE_NAME)
                             
                             device.install_apk(client_apk.path)
 
@@ -217,6 +218,10 @@ def provision(args):
 
                 display.write(["Device provisioned!", device.serial], wait=2)
                         
+            except DeviceWipeClientException as e:
+                print(f"Failed to wipe client: {e}")
+                display.write("Failed to wipe client", wait=5)
+
             except DeviceRemoveDeviceOwnerException as e:
                 print(f"Failed to remove device owner: {e}")
                 display.write("Failed to remove device owner", wait=5)

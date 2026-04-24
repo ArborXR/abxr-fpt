@@ -14,7 +14,7 @@ import zipfile
 from abxr.apk import get_package_name
 
 from abxr.configuration_package import AbxrClientApk, ConfigurationPackage
-from abxr.device_commands import BootsrapViaAuthenticationToken, BootstrapViaJsonFile, RemoveDeviceOwnership
+from abxr.device_commands import BootsrapViaAuthenticationToken, BootstrapViaJsonFile, RemoveDeviceOwnership, WipeClient
 
 # create custom exception for apk install failure
 class DeviceInstallException(Exception):
@@ -39,6 +39,9 @@ class DeviceConfigureApiTokenException(Exception):
     pass
 
 class DeviceConfigurationObjectException(Exception):
+    pass
+
+class DeviceWipeClientException(Exception):
     pass
 
 
@@ -436,6 +439,16 @@ class Device:
             return True
         raise DeviceRemoveDeviceOwnerException("Failed to remove device owner.")
     
+    def wipe_client(self):
+        command = WipeClient()
+        command_json = json.dumps(command.to_dict())
+
+        print(f"Wiping client data on device {self.serial}...")
+        proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "activity", "service", "xrdm.adb.AdbService", f"'''{command_json}'''"], capture_output=True, text=True)
+        if proc.returncode:
+            raise DeviceWipeClientException(f"Failed to wipe client on device {self.serial} - {proc.stderr}")
+        print("Client data wiped.")
+
     def remove_device_owner_v2(self):
         command = RemoveDeviceOwnership()
         command_json = json.dumps(command.to_dict())
