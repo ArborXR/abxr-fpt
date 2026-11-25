@@ -21,8 +21,6 @@ from abxr.device import Device, \
                         DeviceConfigureException, \
                         DeviceSetDeviceOwnerException, \
                         DeviceSetEnvironmentException, \
-                        DeviceRemoveDeviceOwnerException, \
-                        DeviceConfigureApiTokenException, \
                         DeviceGrantPermissionException, \
                         DeviceClientDowngradeException, \
                         DeviceWipeClientException
@@ -65,19 +63,29 @@ def get_connected_devices(args):
     return devices
 
 
+XRDM1_UNSUPPORTED = "XRDM 1 configuration packages are no longer supported. Build a new package in the ArborXR portal."
+
+
+def load_configuration_package(path):
+    package = ConfigurationPackage(path)
+    if not package.is_xrdm2:
+        raise Exception(f"{path}: {XRDM1_UNSUPPORTED}")
+    return package
+
+
 def get_configuration_packages(args):
     packages = []
     models = []
 
     if args.config_package:
         try:
-            packages.append(ConfigurationPackage(args.config_package))
+            packages.append(load_configuration_package(args.config_package))
         except Exception as e:
             print(f"Error loading configuration package: {e}")
     else:
         for f in CONFIG_PACKAGE_PATH.glob("*.zip"):
             try:
-                package = ConfigurationPackage(f)
+                package = load_configuration_package(f)
                 if package.model_name() in models:
                     print(f"Duplicate configuration package detected for {package.model_name()} at {package.path}")
                     print("Automatic device package selection is unavailable.")
@@ -173,9 +181,10 @@ def provision(args):
 
             try:
                 with tempfile.TemporaryDirectory() as tempdir:
-                    try:
-                        launcher_apk_path = package.extract_item(package.launcher_apk, tempdir) if package.launcher_apk else None
+                    launcher_apk_path = package.extract_item(package.launcher_apk, tempdir) if package.launcher_apk else None
 
+                    # The Device Setup App's setup steps: on a failure here, clean up like it does.
+                    try:
                         if not args.package_only:
                             client_override = get_client_apk_override(args)
                             client_apk = client_override or package.extract_client_apk_from_zip(tempdir)
@@ -196,37 +205,30 @@ def provision(args):
                             elif is_hms is None:
                                 print(f"Couldn't tell whether device {device} is enrolled through HMS.")
 
-                            prepare_client(
-                                device,
-                                package,
-                                client_apk,
-                                launcher_apk_path,
-                                operator_chose_client=operator_chose_client,
-                                force_upgrade=args.force_upgrade,
-                            )
+                            prepare_client(device, client_apk, launcher_apk_path, operator_chose_client=operator_chose_client)
                         elif launcher_apk_path:
                             if device.is_packaged_installed(AbxrLauncherApk.PACKAGE_NAME):
                                 device.uninstall_apk(AbxrLauncherApk.PACKAGE_NAME)
                             device.install_apk(launcher_apk_path)
 
-                        device.send_configuration_package(package)
-
-                        if not args.package_only and not package.is_xrdm2:
-                            device.configure_api_token_authentication(package)
+                        device.push_content(package)
+                    except DeviceClientDowngradeException:
+                        # Refused before anything on the headset changed (or by adb, leaving the client as it was).
+                        raise
                     except Exception:
                         if not args.package_only:
-                            clean_up_after_failure(device, package)
+                            clean_up_after_failure(device, has_launcher=launcher_apk_path is not None)
                         raise
+
+                    # Bootstrap from the package, as in the Device Setup App's BootstrapFromPackage. Like it, no
+                    # cleanup when this fails.
+                    device.hand_off_settings(package)
 
                 display.write(["Device provisioned!", device.serial], wait=2)
                         
             except DeviceWipeClientException as e:
                 print(f"Failed to wipe client: {e}")
                 display.write("Failed to wipe client", wait=5)
-
-            except DeviceRemoveDeviceOwnerException as e:
-                print(f"Failed to remove device owner: {e}")
-                display.write("Failed to remove device owner", wait=5)
 
             except DeviceUninstallException as e:
                 print(f"Failed to uninstall apk: {e}")
@@ -253,10 +255,6 @@ def provision(args):
             except DeviceConfigureException as e:
                 print(f"Failed to configure device: {e}")
                 display.write("Failed to configure device", wait=5)
-
-            except DeviceConfigureApiTokenException as e:
-                print(f"Failed to configure API token: {e}")
-                display.write("Failed to configure API token", wait=5)
 
             except Exception as e:
                 print(f"Unhandled Error: {e}")

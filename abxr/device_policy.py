@@ -61,6 +61,35 @@ def parse_service_result(dumpsys_output):
     return None if "ERROR" in result else result
 
 
+def parse_command_id(service_result):
+    """The command id AdbService reports for an accepted command ("... TAG: <id>"), or None."""
+    if "TAG: " not in service_result:
+        return None
+    return service_result.split("TAG: ")[-1].strip() or None
+
+
+def parse_command_progress(logcat_line, command_id):
+    """The message in a `logcat -v tag` line ("I/<command id>: <message>") for this command, or None. The client logs
+    progress there and ends with DONE, or a message starting with ERROR."""
+    line = logcat_line.rstrip("\r\n")
+    if len(line) < 3 or not line[2:].startswith(command_id) or ":" not in line:
+        return None
+    return line[line.index(":") + 2:]
+
+
+_RELEASE_VERSION = re.compile(r"^\d{4}\.\d+\.\d+$")
+
+
+def is_newer_version(installed_version, target_version):
+    """Whether the installed client is a newer release than the target. False unless both are plain release
+    versions (YYYY.W.N, as in the client's release tags)."""
+    if not (installed_version and target_version):
+        return False
+    if not (_RELEASE_VERSION.match(installed_version) and _RELEASE_VERSION.match(target_version)):
+        return False
+    return tuple(map(int, installed_version.split("."))) > tuple(map(int, target_version.split(".")))
+
+
 def is_downgrade_error(adb_install_output):
     """Whether `adb install` failed because the APK is older than the installed version."""
     return "INSTALL_FAILED_VERSION_DOWNGRADE" in adb_install_output.upper()

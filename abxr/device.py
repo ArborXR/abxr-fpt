@@ -3,8 +3,10 @@
 # Released under the MIT License. See LICENSE file for details.
 #
 
+import queue
 import re
 import subprocess
+import threading
 import time
 import json
 from pathlib import Path
@@ -14,13 +16,13 @@ import zipfile
 from abxr.apk import get_package_name
 
 from abxr.configuration_package import AbxrClientApk, ConfigurationPackage
-from abxr.device_commands import RemoveDeviceOwnership, WipeClient
-from abxr.device_policy import CLIENT_ADMIN_RECEIVER, CLIENT_PACKAGE_NAME, is_client_admin, is_downgrade_error, parse_device_owner, parse_is_hms, parse_service_result
+from abxr.device_commands import BootstrapViaJsonFile, WipeClient
+from abxr.device_policy import CLIENT_ADMIN_RECEIVER, CLIENT_PACKAGE_NAME, is_client_admin, is_downgrade_error, parse_command_id, parse_command_progress, parse_device_owner, parse_is_hms, parse_service_result
 
 # Same components the Device Setup App uses (device repo, Core/Configuration.fs and SetupApp.Core/Configuration.fs).
 CLIENT_FINISHING_ACTIVITY = f"{CLIENT_PACKAGE_NAME}/xrdm.app.client.FinishingActivity"
 CLIENT_ADB_SERVICE = "xrdm.adb.AdbService"
-CLIENT_SETUP_DEVICE_RECEIVER = f"{CLIENT_PACKAGE_NAME}/.SetupDeviceReceiver"
+CLIENT_SETTINGS_FILE = "/sdcard/Setup/settings.json"
 
 # create custom exception for apk install failure
 class DeviceInstallException(Exception):
@@ -36,15 +38,6 @@ class DeviceSetDeviceOwnerException(Exception):
     pass
 
 class DeviceSetEnvironmentException(Exception):
-    pass
-
-class DeviceRemoveDeviceOwnerException(Exception):
-    pass
-
-class DeviceConfigureApiTokenException(Exception):
-    pass
-
-class DeviceConfigurationObjectException(Exception):
     pass
 
 class DeviceClientDowngradeException(DeviceInstallException):
@@ -330,18 +323,8 @@ class Device:
                 raise Exception(f"Invalid step: {step}")
 
 
-    def send_configuration_package(self, config_pkg):
-        if isinstance(config_pkg, (str, Path)):
-            config_pkg = ConfigurationPackage(config_pkg)
-
-        if not isinstance(config_pkg, ConfigurationPackage):
-            raise Exception("You must provide a ConfigurationPackage object.")
-
-        if config_pkg.is_xrdm2:
-            client_settings_file_location = "/sdcard/Setup/settings.json"
-        else:
-            client_settings_file_location = "/sdcard/ArborXR/Settings/settings.json"
-
+    def push_content(self, config_pkg):
+        """Install the package's apps and push its files, the way the Device Setup App does."""
         for app in config_pkg.apps:
             with tempfile.TemporaryDirectory() as extract_path:
                 item = config_pkg.extract_item_flat(app, extract_path)
@@ -352,25 +335,30 @@ class Device:
                 item = config_pkg.extract_item_flat(obb_packaged_app, extract_path)
                 self.install_apk_obb_package(item, fallback_package_name=Path(obb_packaged_app).stem)
 
-        # Loose OBBs, files, videos, images and launcher media, to the same paths the Device Setup App uses.
+        # Loose OBBs, files, videos and images, to the same paths the Device Setup App uses.
         for entry, device_path in config_pkg.pushes():
             with tempfile.TemporaryDirectory() as extract_path:
                 item = config_pkg.extract_item_flat(entry, extract_path)
                 self.push_file(item, device_path)
 
-        # Write settings.json to a closed file: on Windows adb can't read a NamedTemporaryFile that's still open.
+    def hand_off_settings(self, config_pkg):
+        """Push settings.json and have the client bootstrap from it, as in the Device Setup App's
+        BootstrapFromPackage: it applies the package's configurations and enrolls with the package's token."""
         with tempfile.TemporaryDirectory() as settings_dir:
+            # A closed file: on Windows adb can't read a NamedTemporaryFile that's still open.
             settings_path = Path(settings_dir) / "settings.json"
             settings_path.write_bytes(config_pkg.read_settings_json_from_zip())
-            self.push_file(settings_path, client_settings_file_location)
+            self.push_file(settings_path, CLIENT_SETTINGS_FILE)
 
-        # Same hand-off as the Device Setup App for both package versions: the client reads settings.json, applies
-        # its configurations and enrolls with its token. Start the client first so the broadcast is allowed.
-        if config_pkg.is_xrdm2:
-            self.start_client_app()
-        proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "broadcast", "-n", CLIENT_SETUP_DEVICE_RECEIVER, "-a", "CONFIGURE_DEVICE", "-e", "ClientSettingsFile", client_settings_file_location], capture_output=True, text=True)
-        if proc.returncode or "Exception" in proc.stdout or "Error" in proc.stdout:
-            raise DeviceConfigureException(f"Failed to configure device with settings.json. {proc.stdout}{proc.stderr}")
+        self.run_client_command(BootstrapViaJsonFile(CLIENT_SETTINGS_FILE), DeviceConfigureException)
+
+    def send_configuration_package(self, config_pkg):
+        if isinstance(config_pkg, (str, Path)):
+            config_pkg = ConfigurationPackage(config_pkg)
+        if not isinstance(config_pkg, ConfigurationPackage):
+            raise Exception("You must provide a ConfigurationPackage object.")
+        self.push_content(config_pkg)
+        self.hand_off_settings(config_pkg)
 
     def force_stop_and_sleep(self, package_name, seconds):
         proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "force-stop", package_name])
@@ -415,20 +403,19 @@ class Device:
             if proc.returncode or proc.stdout.strip():
                 raise DeviceGrantPermissionException(f"Failed to grant REQUEST_INSTALL_PACKAGES to the client. {proc.stdout}{proc.stderr}")
 
-    def install_client_apk(self, client_apk_path, keep_newer_installed=True):
+    def install_client_apk(self, apk_path, keep_newer_installed=True, label="ArborXR client"):
         """Install the client or launcher. Returns False when the headset already has a newer one and
         keep_newer_installed is set: like the Device Setup App, a refused downgrade of a package's own client or
-        launcher is ignored. A client the operator chose (a /client override, --force-upgrade) must install, so its
-        downgrade still fails."""
-        proc = subprocess.run(["adb", "-s", self.serial, "install", "-r", "-t", "-g", client_apk_path], capture_output=True, text=True)
+        launcher is ignored. A client the operator chose (a /client override, --force-upgrade) must install."""
+        proc = subprocess.run(["adb", "-s", self.serial, "install", "-r", "-t", "-g", apk_path], capture_output=True, text=True)
         if not proc.returncode:
             return True
         if is_downgrade_error(proc.stdout + proc.stderr):
             if keep_newer_installed:
-                print(f"Device {self.serial} has a newer ArborXR client than the package. Keeping it.")
+                print(f"Device {self.serial} has a newer {label} than the package's. Keeping it.")
                 return False
-            raise DeviceClientDowngradeException(f"Device {self.serial} has a newer ArborXR client than {client_apk_path}. Remove the /client override or --force-upgrade.")
-        raise DeviceInstallException(f"Failed to install {client_apk_path} on device {self.serial} - {proc.stderr}")
+            raise DeviceClientDowngradeException(f"Device {self.serial} has a newer {label} than {apk_path}. Remove the /client override or --force-upgrade.")
+        raise DeviceInstallException(f"Failed to install {apk_path} on device {self.serial} - {proc.stderr}")
 
     def set_device_owner(self):
         self.grant_client_permissions()
@@ -467,35 +454,12 @@ class Device:
         if proc.returncode:
             raise DeviceSetEnvironmentException("Failed to set production environment.")
 
-    def _refuse_on_hms(self, action, exception_class):
-        # HMS records how the headset was provisioned only at enrollment. Our client keeps it through a
-        # WipeClient (client CL-1355), but removing device ownership or uninstalling the client loses it.
-        # Refuse on a definite HMS answer only: these steps run only for XRDM 1 packages, which can't be HMS
-        # enrolled, and the Device Setup App also treats an unclear answer as not HMS.
-        if self.is_hms() is True:
-            raise exception_class(f"Not allowed to {action} on HMS headset {self.serial}. Use WipeClient instead.")
-
-    def remove_device_owner(self):
-        self._refuse_on_hms("remove device ownership", DeviceRemoveDeviceOwnerException)
-        proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "broadcast", "-n", "app.xrdm.client/.AdminRemover", "-a", "REMOVE_DEVICE_OWNER"])
-        max_wait_sec = 10
-        wait_sec = 0
-        if proc.returncode == 0:
-            while True and wait_sec < max_wait_sec:
-                proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "device_policy", "|", "grep", "\"app.xrdm.client/.AdminReceiver\""], capture_output=True, text=True)
-                if proc.stdout == "":
-                    break
-                print("Waiting for device owner removal...")
-                time.sleep(1)
-                wait_sec += 1
-            
-            print("Device owner removal complete.")
-            return True
-        raise DeviceRemoveDeviceOwnerException("Failed to remove device owner.")
-    
     def start_client_app(self):
         """Start the client in the foreground, as the Device Setup App does before talking to it."""
-        subprocess.run(["adb", "-s", self.serial, "shell", "am", "start", "-n", CLIENT_FINISHING_ACTIVITY], capture_output=True, text=True)
+        proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "start", "-n", CLIENT_FINISHING_ACTIVITY], capture_output=True, text=True)
+        output = proc.stdout + proc.stderr
+        if proc.returncode or ("Error" in output and "Warning" not in output):
+            raise DeviceConfigureException(f"Couldn't start the ArborXR client on {self.serial}. {output}")
 
     def _start_adb_service(self):
         try:
@@ -507,72 +471,66 @@ class Device:
         if proc.returncode or "error" in proc.stdout.lower():
             raise Exception(f"Failed to start the client's AdbService. {proc.stdout}{proc.stderr}")
 
-    def run_client_command(self, command, exception_class):
-        """Send a command to the client's AdbService the way the Device Setup App does: start the service, check
-        that it answered, and retry up to 3 times, restarting the client in between. Right after an install the
-        service isn't running yet, and dumpsys then exits 0 with "No services match"."""
+    def _wait_for_client_command(self, command_id, timeout_seconds):
+        """Follow the client's log for a command until it reports DONE, like the Device Setup App."""
+        proc = subprocess.Popen(["adb", "-s", self.serial, "logcat", "-v", "tag", "-b", "main", f"{command_id}:I", "*:S"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        lines = queue.Queue()
+        threading.Thread(target=lambda: [lines.put(line) for line in proc.stdout], daemon=True).start()
+        deadline = time.time() + timeout_seconds
+        try:
+            while time.time() < deadline:
+                try:
+                    line = lines.get(timeout=max(0.1, deadline - time.time()))
+                except queue.Empty:
+                    break
+                message = parse_command_progress(line, command_id)
+                if message is None:
+                    continue
+                if message.startswith("ERROR"):
+                    raise Exception(message)
+                if message == "DONE":
+                    return
+            raise Exception(f"Command {command_id} didn't finish within {timeout_seconds} s.")
+        finally:
+            proc.kill()
+
+    def run_client_command(self, command, exception_class, timeout_seconds=20):
+        """Send a command to the client's AdbService the way the Device Setup App does (ExecuteCommand): start the
+        service, check that it took the command, follow the log until the command reports DONE, and on failure retry
+        3 more times, restarting the client in between. Right after an install the service isn't running yet, and
+        dumpsys then exits 0 with "No services match"."""
         command_json = json.dumps(command.to_dict())
-        last_output = ""
-        for attempt in range(3):
+        last_error = ""
+        for attempt in range(4):
             if attempt:
                 time.sleep(1)
-                self.start_client_app()
+                try:
+                    self.start_client_app()
+                except DeviceConfigureException as e:
+                    last_error = str(e)
             try:
                 self._start_adb_service()
                 proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "activity", "service", CLIENT_ADB_SERVICE, f"'''{command_json}'''"], capture_output=True, text=True)
-                last_output = proc.stdout + proc.stderr
                 result = parse_service_result(proc.stdout)
-                if result is not None:
-                    return result
+                if result is None:
+                    raise Exception(f"AdbService didn't take the command. {proc.stdout}{proc.stderr}")
+                command_id = parse_command_id(result)
+                if command_id:
+                    self._wait_for_client_command(command_id, timeout_seconds)
+                return result
             except Exception as e:
-                last_output = str(e)
-        raise exception_class(f"The client on {self.serial} didn't accept {command}. {last_output}")
+                last_error = str(e)
+        raise exception_class(f"The client on {self.serial} didn't complete {command}. {last_error}")
 
     def wipe_client(self):
         print(f"Wiping client data on device {self.serial}...")
         self.run_client_command(WipeClient(), DeviceWipeClientException)
         print("Client data wiped.")
 
-    def remove_device_owner_v2(self):
-        self._refuse_on_hms("remove device ownership", DeviceRemoveDeviceOwnerException)
-        self.run_client_command(RemoveDeviceOwnership(), DeviceRemoveDeviceOwnerException)
-        for _ in range(10):
-            if not is_client_admin(self.device_owner()):
-                print("Device owner removal complete.")
-                return True
-            print("Waiting for device owner removal...")
-            time.sleep(1)
-        raise DeviceRemoveDeviceOwnerException("The client is still the device owner after RemoveDeviceOwnership.")
-
     def uninstall_apk(self, package_name):
-        if package_name == AbxrClientApk.PACKAGE_NAME:
-            self._refuse_on_hms("uninstall the ArborXR client", DeviceUninstallException)
         proc = subprocess.run(["adb", "-s", self.serial, "uninstall", package_name], capture_output=True, text=True)
         if proc.returncode:
             raise DeviceUninstallException(f"Failed to uninstall {package_name} on device {self.serial} - {proc.stderr}")
-
-    def configure_api_token_authentication(self, config_pkg):
-        """XRDM 1 packages only. A v2 package enrolls from settings.json (the CONFIGURE_DEVICE broadcast), as in the Device
-        Setup App."""
-        if isinstance(config_pkg, (str, Path)):
-            config_pkg = ConfigurationPackage(config_pkg)
-
-        if not isinstance(config_pkg, ConfigurationPackage):
-            raise Exception("You must provide a ConfigurationPackage object.")
-
-        if config_pkg.is_xrdm2:
-            return
-
-        settings = config_pkg.settings
-        api_token_auth = {
-            "apiToken": settings["apiToken"],
-            "deviceGroup": {"id": settings["deviceGroup"]["id"]},
-        }
-        api_token_auth_json = json.dumps(api_token_auth)
-
-        proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "broadcast", "-n", "app.xrdm.client/.SetupDeviceReceiver", "-a", "CONFIGURE_API_TOKEN", "-e", "ApiTokenAuth", f"'''{api_token_auth_json}'''"])
-        if proc.returncode:
-            raise DeviceConfigureApiTokenException("Failed to configure device with API token authentication.")
 
     def get_installed_version(self, package_name):
         result = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "package", package_name], capture_output=True, text=True)

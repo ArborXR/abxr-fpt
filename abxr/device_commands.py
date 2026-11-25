@@ -11,15 +11,18 @@ class WipeClient:
             "input": {}
         }
 
-class RemoveDeviceOwnership:
-    def __init__(self):
-        pass
+
+class BootstrapViaJsonFile:
+    def __init__(self, file_location):
+        self.file_location = file_location
 
     def __repr__(self):
-        return f"RemoveDeviceOwnership()"
-    
+        return f"BootstrapViaJsonFile(file_location={self.file_location})"
+
     def to_dict(self):
         return {
-            "type": "RemoveDeviceOwnership",
-            "input": None
+            "type": "BootstrapViaJsonFile",
+            "input": {
+                "file": self.file_location
+            }
         }

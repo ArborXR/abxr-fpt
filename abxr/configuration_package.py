@@ -82,7 +82,6 @@ class ConfigurationPackage:
         self.obbs = []
         self.files = []
         self.videos = []
-        self.launcher_media = []
         self.images = []
 
         self._open()
@@ -181,8 +180,6 @@ class ConfigurationPackage:
                 self.videos.append(entry)
             elif category == "images":
                 self.images.append(entry)
-            elif category == "launcher-media":
-                self.launcher_media.append(entry)
 
     def device_path(self, entry):
         """Where an entry goes on the device, matching the Device Setup App (SetupApp.Core/ConfigPackage.fs)."""
@@ -207,15 +204,11 @@ class ConfigurationPackage:
             # under Media so two files with the same name can't overwrite each other.
             return f"/sdcard/ArborXR/Media/{remainder}"
 
-        if category == "launcher-media":
-            # XRDM 1 packages only. Kept where this tool has always put it.
-            return f"/sdcard/launcher-media/{remainder}"
-
         raise Exception(f"No device path for package entry {entry}")
 
     def pushes(self):
         """Every entry that's pushed as a plain file, with its device path."""
-        entries = self.obbs + self.files + self.videos + self.images + self.launcher_media
+        entries = self.obbs + self.files + self.videos + self.images
         return [(entry, self.device_path(entry)) for entry in entries]
 
     def created_at(self):

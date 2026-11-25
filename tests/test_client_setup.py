@@ -29,7 +29,7 @@ class FakeDevice:
     def is_packaged_installed(self, package_name):
         return package_name == LAUNCHER and self.launcher_installed
 
-    def install_client_apk(self, path, keep_newer_installed):
+    def install_client_apk(self, path, keep_newer_installed, label="ArborXR client"):
         self.calls.append(("install", path, keep_newer_installed))
         if "launcher" in path:
             return True
@@ -67,27 +67,20 @@ class FakeApk:
         self.path = f"app.xrdm.client-{version}"
 
 
-class FakePackage:
-    def __init__(self, is_xrdm2):
-        self.is_xrdm2 = is_xrdm2
-
-
-V2 = FakePackage(is_xrdm2=True)
-V1 = FakePackage(is_xrdm2=False)
 LAUNCHER_APK = "app.xrdm.launcher-2026.40.1"
 
 
-def prepare(device, package, version, launcher=None, chose=False, force=False):
-    return prepare_client(device, package, FakeApk(version), launcher, operator_chose_client=chose, force_upgrade=force)
+def prepare(device, version, launcher=None, chose=False):
+    return prepare_client(device, FakeApk(version), launcher, operator_chose_client=chose)
 
 
-class PrepareClientV2Test(unittest.TestCase):
+class PrepareClientTest(unittest.TestCase):
     """The Device Setup App's order: clean up the launcher, install client and launcher, start the client, set the
     device owner, wipe (only when the client was already there)."""
 
     def test_reinstall_follows_the_device_setup_app(self):
         device = FakeDevice("2026.45.0", launcher_installed=True)
-        prepare(device, V2, "2026.47.0", launcher=LAUNCHER_APK)
+        prepare(device, "2026.47.0", launcher=LAUNCHER_APK)
         self.assertEqual(
             [
                 ("uninstall", LAUNCHER),
@@ -104,7 +97,7 @@ class PrepareClientV2Test(unittest.TestCase):
     def test_newer_client_on_the_headset_is_kept_and_wiped(self):
         # An HMS headset whose client is newer than the package's: the refused downgrade is ignored.
         device = FakeDevice("2026.48.0", install_result=False)
-        self.assertFalse(prepare(device, V2, "2026.47.0"))
+        self.assertFalse(prepare(device, "2026.47.0"))
         self.assertEqual(
             [("install", "app.xrdm.client-2026.47.0", True), "start_client_app", "set_device_owner", "wipe_client"],
             device.calls,
@@ -112,45 +105,26 @@ class PrepareClientV2Test(unittest.TestCase):
 
     def test_fresh_headset_isnt_wiped(self):
         device = FakeDevice(None)
-        prepare(device, V2, "2026.47.0")
+        prepare(device, "2026.47.0")
         self.assertNotIn("wipe_client", device.calls)
 
-    def test_operator_chosen_downgrade_fails_before_the_wipe(self):
-        device = FakeDevice("2026.48.0", install_result=DeviceClientDowngradeException("newer"))
+    def test_operator_chosen_downgrade_is_refused_before_any_change(self):
+        device = FakeDevice("2026.48.0", launcher_installed=True)
         with self.assertRaises(DeviceClientDowngradeException):
-            prepare(device, V2, "2026.40.0", chose=True)
-        self.assertEqual([("install", "app.xrdm.client-2026.40.0", False)], device.calls)
-
-    def test_failure_cleanup_wipes_but_never_uninstalls(self):
-        device = FakeDevice("2026.47.0")
-        clean_up_after_failure(device, V2)
-        self.assertEqual(["wipe_client"], device.calls)
-
-
-class PrepareClientV1Test(unittest.TestCase):
-    def test_keeps_the_original_uninstall_and_reinstall(self):
-        device = FakeDevice("2026.48.0")
-        prepare(device, V1, "2025.10.0")
-        self.assertEqual(
-            [
-                "remove_device_owner",
-                ("uninstall", "app.xrdm.client"),
-                ("install", "app.xrdm.client-2025.10.0", False),
-                "set_device_owner",
-                "set_production_environment",
-            ],
-            device.calls,
-        )
-
-    def test_current_client_is_left_alone(self):
-        device = FakeDevice("2025.10.0")
-        prepare(device, V1, "2025.10.0")
+            prepare(device, "2026.40.0", launcher=LAUNCHER_APK, chose=True)
         self.assertEqual([], device.calls)
 
-    def test_failure_cleanup_does_nothing(self):
-        device = FakeDevice("2025.10.0")
-        clean_up_after_failure(device, V1)
-        self.assertEqual([], device.calls)
+    def test_refused_install_of_a_chosen_client_stops_before_the_wipe(self):
+        # Versions adb can't compare up front: the install itself is refused.
+        device = FakeDevice("2026.48.0-dev", install_result=DeviceClientDowngradeException("newer"))
+        with self.assertRaises(DeviceClientDowngradeException):
+            prepare(device, "2026.40.0", chose=True)
+        self.assertNotIn("wipe_client", device.calls)
+
+    def test_failure_cleanup_wipes_and_removes_the_launcher_but_never_uninstalls_the_client(self):
+        device = FakeDevice("2026.47.0", launcher_installed=True)
+        clean_up_after_failure(device, has_launcher=True)
+        self.assertEqual(["wipe_client", ("uninstall", LAUNCHER)], device.calls)
 
 
 if __name__ == "__main__":

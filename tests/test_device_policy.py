@@ -1,6 +1,6 @@
 import unittest
 
-from abxr.device_policy import is_client_admin, is_downgrade_error, parse_device_owner, parse_is_hms, parse_service_result
+from abxr.device_policy import is_client_admin, is_downgrade_error, is_newer_version, parse_command_id, parse_command_progress, parse_device_owner, parse_is_hms, parse_service_result
 
 DUMPSYS_OWNED_BY_CLIENT = """Current Device Policy Manager state:
   Immutable state:
@@ -51,6 +51,22 @@ class DevicePolicyTest(unittest.TestCase):
         # Right after an install the service isn't running yet; dumpsys still exits 0.
         self.assertIsNone(parse_service_result("No services match: xrdm.adb.AdbService\n"))
         self.assertIsNone(parse_service_result("SERVICE app.xrdm.client/xrdm.adb.AdbService 7c1e2f pid=4321 user=0\n  Client:\n  ERROR: unknown command\n"))
+
+    def test_follows_a_client_command_to_done(self):
+        self.assertEqual("0f3a9c", parse_command_id("OK TAG: 0f3a9c"))
+        self.assertIsNone(parse_command_id("OK"))
+        self.assertEqual("Wiping database", parse_command_progress("I/0f3a9c: Wiping database\n", "0f3a9c"))
+        self.assertEqual("DONE", parse_command_progress("I/0f3a9c: DONE\n", "0f3a9c"))
+        self.assertEqual("ERROR: no space", parse_command_progress("I/0f3a9c: ERROR: no space", "0f3a9c"))
+        self.assertIsNone(parse_command_progress("I/ActivityManager: Start proc", "0f3a9c"))
+        self.assertIsNone(parse_command_progress("--------- beginning of main", "0f3a9c"))
+
+    def test_compares_release_versions_only(self):
+        self.assertTrue(is_newer_version("2026.48.0", "2026.45.1"))
+        self.assertFalse(is_newer_version("2026.47.0", "2026.47.0"))
+        self.assertFalse(is_newer_version("2026.9.0", "2026.10.0"))
+        self.assertFalse(is_newer_version(None, "2026.47.0"))
+        self.assertFalse(is_newer_version("2026.48.0-dev", "2026.47.0"))
 
     def test_recognises_a_client_downgrade(self):
         self.assertTrue(is_downgrade_error("adb: failed to install c.apk: Failure [INSTALL_FAILED_VERSION_DOWNGRADE: Downgrade detected]"))
