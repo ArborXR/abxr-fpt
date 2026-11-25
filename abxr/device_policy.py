@@ -35,16 +35,17 @@ def is_client_admin(component):
 
 
 def parse_is_hms(oemconfig_query_output, oemconfig_query_error=""):
-    """Whether Meta's OEMConfig provider reports the headset as managed by Horizon managed services (HMS).
+    """Whether Meta's OEMConfig provider reports the headset as managed by Horizon managed services (HMS):
+    True, False, or None when the provider gave no answer.
 
     Based on the Device Setup App (SetupApp.Core/Adb.fs, GetIsHms): any stderr means no answer, and a managed
-    headset's row doesn't contain -1 or "not found". Stricter than it in one way: no result row means not HMS.
+    headset's row doesn't contain -1 or "not found". An empty result is also no answer here.
     """
     if oemconfig_query_error.strip() or "Row:" not in oemconfig_query_output:
-        return False
+        return None
     return not ("-1" in oemconfig_query_output or "not found" in oemconfig_query_output)
 
 
 def is_downgrade_error(adb_install_output):
     """Whether `adb install` failed because the APK is older than the installed version."""
-    return "DOWNGRADE" in adb_install_output.upper()
+    return "INSTALL_FAILED_VERSION_DOWNGRADE" in adb_install_output.upper()

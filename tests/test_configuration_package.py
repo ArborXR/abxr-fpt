@@ -67,7 +67,7 @@ class ConfigurationPackageTest(unittest.TestCase):
             "videos/~/sdcard/ArborXR/videos/abc123.mp4",
             "images/AppIcons/icon.png",
             "images/Wallpapers/wallpaper.png",
-            "images/Unknown/thing.png",
+            "images/Unknown/a/thing.png",
             "launcher-media/backgrounds/home.png",
         )
 
@@ -78,7 +78,7 @@ class ConfigurationPackageTest(unittest.TestCase):
                 f"{PACKAGE_ID}/videos/~/sdcard/ArborXR/videos/abc123.mp4": "/sdcard/ArborXR/Videos/abc123.mp4",
                 f"{PACKAGE_ID}/images/AppIcons/icon.png": "/sdcard/ArborXR/Media/AppIcons/icon.png",
                 f"{PACKAGE_ID}/images/Wallpapers/wallpaper.png": "/sdcard/ArborXR/Media/Wallpapers/wallpaper.png",
-                f"{PACKAGE_ID}/images/Unknown/thing.png": "/sdcard/thing.png",
+                f"{PACKAGE_ID}/images/Unknown/a/thing.png": "/sdcard/ArborXR/Media/Unknown/a/thing.png",
                 f"{PACKAGE_ID}/launcher-media/backgrounds/home.png": "/sdcard/launcher-media/backgrounds/home.png",
             },
             dict(package.pushes()),
@@ -93,6 +93,17 @@ class ConfigurationPackageTest(unittest.TestCase):
         package = build_package(self.directory.name, ["apps/com.example.app.apk"], first_entry=".DS_Store")
         self.assertEqual(f"{PACKAGE_ID}/", package.root_prefix)
         self.assertEqual([f"{PACKAGE_ID}/apps/com.example.app.apk"], package.apps)
+
+    def test_prefers_a_settings_json_at_the_zip_root(self):
+        path = Path(self.directory.name) / "flat.zip"
+        with zipfile.ZipFile(path, "w") as zip_file:
+            zip_file.writestr("settings.json", json.dumps({"version": "2.0.0", "deviceModel": {"name": "Quest 3S"}}))
+            zip_file.writestr("client/app.xrdm.client-2026.47.0.apk", b"apk")
+            zip_file.writestr("videos/settings.json", b"{}")
+            zip_file.writestr("apps/com.example.app.apk", b"x")
+        package = ConfigurationPackage(path)
+        self.assertEqual("", package.root_prefix)
+        self.assertEqual(["apps/com.example.app.apk"], package.apps)
 
     def test_ignores_settings_json_files_inside_the_content(self):
         package = self.package("files/~/sdcard/Android/data/com.example/files/settings.json")

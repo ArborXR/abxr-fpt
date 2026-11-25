@@ -10,18 +10,6 @@ import uuid
 from pathlib import Path
 import zipfile
 
-# Image folders inside a package's images/ directory. The Device Setup App puts each one under
-# /sdcard/ArborXR/Media/<folder>/ (device repo, SetupApp.Core/ConfigPackage.fs, ImageType.toDirectoryName).
-IMAGE_DIRECTORIES = [
-    "AppIcons",
-    "VideoIcons",
-    "WebXrIcons",
-    "OrganizationIcons",
-    "EnvironmentBanners",
-    "EnvironmentBackgrounds",
-    "EnvironmentSkyboxes",
-    "Wallpapers",
-]
 
 class AbxrClientApk:
     PACKAGE_NAME = "app.xrdm.client"
@@ -147,12 +135,13 @@ class ConfigurationPackage:
     def _find_root_prefix(self):
         # The package root is the folder that holds settings.json: the package id for portal builds, or the zip
         # root. Using the first entry instead breaks when e.g. a .DS_Store sorts first.
-        candidates = [
-            entry for entry in self._entries()
-            if entry.lstrip("/").split("/")[-1] == "settings.json" and entry.lstrip("/").count("/") <= 1
-        ]
+        settings_files = [entry for entry in self._entries() if entry.lstrip("/").split("/")[-1] == "settings.json"]
+        # A settings.json at the zip root wins; otherwise it must sit in a single top-level folder.
+        candidates = [entry for entry in settings_files if entry.lstrip("/").count("/") == 0]
+        if not candidates:
+            candidates = [entry for entry in settings_files if entry.lstrip("/").count("/") == 1]
         if len(candidates) == 0:
-            raise Exception("settings.json not found at the package root.")
+            raise Exception("settings.json not found at the package root or in a top-level folder. If the package was re-zipped, zip the package folder itself.")
         if len(candidates) > 1:
             raise Exception("Multiple settings.json files found at the package root.")
 
@@ -213,10 +202,10 @@ class ConfigurationPackage:
             return f"/sdcard/ArborXR/Videos/{file_name}"
 
         if category == "images":
-            image_directory, _, after_directory = remainder.partition("/")
-            if image_directory in IMAGE_DIRECTORIES:
-                return f"/sdcard/ArborXR/Media/{image_directory}/{after_directory}"
-            return f"/sdcard/{file_name}"
+            # images/<AppIcons|VideoIcons|...>/<file> goes to /sdcard/ArborXR/Media/<folder>/<file>, as in the Device
+            # Setup App (ImageType.toDirectoryName). Other folders don't come from the portal; they keep their path
+            # under Media so two files with the same name can't overwrite each other.
+            return f"/sdcard/ArborXR/Media/{remainder}"
 
         if category == "launcher-media":
             # XRDM 1 packages only. Kept where this tool has always put it.

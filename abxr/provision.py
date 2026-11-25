@@ -23,6 +23,7 @@ from abxr.device import Device, \
                         DeviceSetEnvironmentException, \
                         DeviceRemoveDeviceOwnerException, \
                         DeviceConfigureApiTokenException, \
+                        DeviceGrantPermissionException, \
                         DeviceWipeClientException
 from abxr.display import display
 from abxr.version import version
@@ -185,6 +186,8 @@ def provision(args):
                         is_hms = device.is_hms()
                         if is_hms:
                             print(f"Device {device} is enrolled through Meta Horizon managed services (HMS).")
+                        elif is_hms is None:
+                            print(f"Couldn't tell whether device {device} is enrolled through HMS. Treating it as HMS for anything destructive.")
 
                         installed_version = device.abxr_client_version()
                         needs_client_install = installed_version != client_apk.version or args.force_upgrade
@@ -201,7 +204,11 @@ def provision(args):
                                 device.uninstall_apk(AbxrClientApk.PACKAGE_NAME)
 
                         if needs_client_install:
-                            installed = device.install_client_apk(client_apk.path)
+                            client_override = get_client_apk_override(args)
+                            installed = device.install_client_apk(
+                                client_apk.path,
+                                keep_newer_installed=client_override is None and not args.force_upgrade,
+                            )
 
                             if installed and device.abxr_client_version() != client_apk.version:
                                 print(f"Failed to install ArborXR Client APK on {device}")
@@ -244,6 +251,9 @@ def provision(args):
                 print(f"Failed to install apk: {e}")
                 display.write("Failed to install apk", wait=5)
 
+            except DeviceGrantPermissionException as e:
+                print(f"Failed to grant client permissions: {e}")
+                display.write("Failed to grant client permissions", wait=5)
             except DeviceSetDeviceOwnerException as e:
                 print(f"Failed to set device owner: {e}")
                 display.write("Failed to set device owner", wait=5)

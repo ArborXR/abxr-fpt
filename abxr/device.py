@@ -42,6 +42,9 @@ class DeviceConfigureApiTokenException(Exception):
 class DeviceConfigurationObjectException(Exception):
     pass
 
+class DeviceGrantPermissionException(Exception):
+    pass
+
 class DeviceWipeClientException(Exception):
     pass
 
@@ -154,18 +157,20 @@ class Device:
         if proc.returncode:
             raise Exception(f"Failed to create directory {path} on device {self.serial}")
     
-    def install_apk_obb_package(self, package_name):
+    def install_apk_obb_package(self, package_name, fallback_package_name=None):
+        """Install an app bundle zip. Its OBBs go to the package name of the APK inside it, or, like the Device
+        Setup App, to the bundle's own name when it has no APK."""
         if type(package_name) == str:
             package_name = Path(package_name)
 
-        if not package_name.suffix == ".zip":
+        if not package_name.suffix.lower() == ".zip":
             print(f"Skipping non-ZIP packaged file. {package_name}")
             raise DeviceInstallException(f"non-ZIP packaged file. {package_name}")
         
         with tempfile.TemporaryDirectory() as extract_path:
             try:
                 zipfile.ZipFile(package_name, 'r').extractall(extract_path)
-                package_name = None
+                package_name = fallback_package_name
                 for file in Path(extract_path).rglob("*.apk"):
                     if not file.name.startswith("."):
                         package_name = get_package_name(file)
@@ -185,7 +190,7 @@ class Device:
         if type(package_name) == str:
             package_name = Path(package_name)
 
-        if not package_name.suffix == ".apk":
+        if not package_name.suffix.lower() == ".apk":
             print(f"Skipping non-APK file. {package_name}")
             raise DeviceInstallException(f"non-APK file. {package_name}")
 
@@ -334,7 +339,7 @@ class Device:
         for obb_packaged_app in config_pkg.obb_packaged_apps:
             with tempfile.TemporaryDirectory() as extract_path:
                 item = config_pkg.extract_item_flat(obb_packaged_app, extract_path)
-                self.install_apk_obb_package(item)
+                self.install_apk_obb_package(item, fallback_package_name=Path(obb_packaged_app).stem)
 
         # Loose OBBs, files, videos, images and launcher media, to the same paths the Device Setup App uses.
         for entry, device_path in config_pkg.pushes():
@@ -380,12 +385,13 @@ class Device:
         return parse_device_owner(proc.stdout)
 
     def is_hms(self):
-        """Whether the headset is managed through Meta Horizon managed services (HMS)."""
+        """Whether the headset is managed through Meta Horizon managed services (HMS): True, False, or None when
+        Meta's OEMConfig provider gives no answer."""
         if not self.is_quest():
             return False
         proc = subprocess.run(["adb", "-s", self.serial, "shell", "content", "query", "--uri", "content://com.oculus.oemconfig.provider/managed"], capture_output=True, text=True)
         if proc.returncode:
-            return False
+            return None
         return parse_is_hms(proc.stdout, proc.stderr)
 
     def android_major_version(self):
@@ -400,15 +406,16 @@ class Device:
         if self.android_major_version() >= 11:
             proc = subprocess.run(["adb", "-s", self.serial, "shell", "appops", "set", CLIENT_PACKAGE_NAME, "REQUEST_INSTALL_PACKAGES", "allow"], capture_output=True, text=True)
             if proc.returncode or proc.stdout.strip():
-                raise DeviceSetDeviceOwnerException(f"Failed to grant REQUEST_INSTALL_PACKAGES to the client. {proc.stdout}{proc.stderr}")
+                raise DeviceGrantPermissionException(f"Failed to grant REQUEST_INSTALL_PACKAGES to the client. {proc.stdout}{proc.stderr}")
 
-    def install_client_apk(self, client_apk_path):
-        """Install the package's client. Returns False when the headset already has a newer client: like the
-        Device Setup App, a failed downgrade of the client is ignored and the newer one is kept."""
+    def install_client_apk(self, client_apk_path, keep_newer_installed=True):
+        """Install the client. Returns False when the headset already has a newer client and keep_newer_installed
+        is set: like the Device Setup App, a failed downgrade of the package's own client is ignored. A client the
+        operator chose (a /client override, --force-upgrade) must install, so its downgrade still fails."""
         proc = subprocess.run(["adb", "-s", self.serial, "install", "-r", "-t", "-g", client_apk_path], capture_output=True, text=True)
         if not proc.returncode:
             return True
-        if is_downgrade_error(proc.stdout + proc.stderr):
+        if keep_newer_installed and is_downgrade_error(proc.stdout + proc.stderr):
             print(f"Device {self.serial} has a newer ArborXR client than the package. Keeping it.")
             return False
         raise DeviceInstallException(f"Failed to install {client_apk_path} on device {self.serial} - {proc.stderr}")
@@ -453,7 +460,8 @@ class Device:
     def _refuse_on_hms(self, action, exception_class):
         # HMS records how the headset was provisioned only at enrollment. Our client keeps it through a
         # WipeClient (client CL-1355), but removing device ownership or uninstalling the client loses it.
-        if self.is_hms():
+        # Refuse when the HMS check gives no answer too: losing an HMS enrollment is worse than a refused reinstall.
+        if self.is_hms() is not False:
             raise exception_class(f"Not allowed to {action} on HMS headset {self.serial}. Use WipeClient instead.")
 
     def remove_device_owner(self):

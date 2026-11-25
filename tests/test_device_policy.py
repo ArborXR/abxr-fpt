@@ -40,14 +40,15 @@ class DevicePolicyTest(unittest.TestCase):
         self.assertTrue(parse_is_hms("Row: 0 managed=1"))
         self.assertFalse(parse_is_hms("Row: 0 managed=-1"))
 
-    def test_no_answer_from_the_provider_is_not_hms(self):
-        self.assertFalse(parse_is_hms("", "Error while accessing provider:com.oculus.oemconfig.provider\nCould not find provider"))
-        self.assertFalse(parse_is_hms(""))
-        self.assertFalse(parse_is_hms("No result found."))
+    def test_no_answer_from_the_provider_is_unknown(self):
+        self.assertIsNone(parse_is_hms("", "Error while accessing provider:com.oculus.oemconfig.provider\nCould not find provider"))
+        self.assertIsNone(parse_is_hms(""))
+        self.assertIsNone(parse_is_hms("No result found."))
 
     def test_recognises_a_client_downgrade(self):
         self.assertTrue(is_downgrade_error("adb: failed to install c.apk: Failure [INSTALL_FAILED_VERSION_DOWNGRADE: Downgrade detected]"))
         self.assertFalse(is_downgrade_error("adb: failed to install c.apk: Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE]"))
+        self.assertFalse(is_downgrade_error("adb: failed to install /client/app.xrdm.client-downgrade.apk: Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE]"))
 
 
 if __name__ == "__main__":
