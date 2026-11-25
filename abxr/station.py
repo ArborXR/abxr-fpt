@@ -101,6 +101,8 @@ class Station:
                     del self._states[serial]
                     self._adb_states.pop(serial, None)
                     self._not_ready_since.pop(serial, None)
+                    if self.last_failure and self.last_failure[0] == serial:
+                        self.last_failure = None
 
             for serial, adb_state in devices:
                 if self._only_serial and serial != self._only_serial:
@@ -139,6 +141,11 @@ class Station:
         ok, reason = False, None
         with self._slots:
             with self._lock:
+                # Queued when Ctrl+C was pressed: don't start it.
+                if self._stopping:
+                    del self._states[serial]
+                    print_log("Not started: stopping.")
+                    return
                 self._active += 1
             try:
                 result = self._run(serial, log)
@@ -152,9 +159,11 @@ class Station:
                     self._results[serial] = DONE if ok else FAILED
                     if not ok:
                         self.last_failure = (serial, reason or last_message[0])
+                    elif self.last_failure and self.last_failure[0] == serial:
+                        self.last_failure = None
 
     def stop(self):
-        """Start no new headsets. Running ones carry on."""
+        """Start no new headsets, including queued ones. Running ones carry on."""
         with self._lock:
             self._stopping = True
 
@@ -179,10 +188,15 @@ class Station:
             )
 
     def all_succeeded(self):
-        """For --once: every headset seen was provisioned. One that failed, or that adb never let us use, wasn't."""
+        """For --once: at least one headset was provisioned and every headset seen was. One that failed, or that adb
+        never let us use, wasn't."""
         with self._lock:
             never_ready = any(state == NOT_READY for state in self._states.values())
-            return not never_ready and all(result == DONE for result in self._results.values())
+            return bool(self._results) and not never_ready and all(result == DONE for result in self._results.values())
+
+    def finished_count(self):
+        with self._lock:
+            return len(self._results)
 
     def counts(self):
         with self._lock:

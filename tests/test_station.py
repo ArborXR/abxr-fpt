@@ -154,6 +154,43 @@ class StationTest(unittest.TestCase):
         station.join(5)
         self.assertEqual([], self.started)
 
+    def test_stop_doesnt_start_queued_headsets(self):
+        release = threading.Event()
+        started = []
+
+        def run(serial, log):
+            started.append(serial)
+            release.wait(5)
+            return True
+
+        station = self.station(run, max_parallel=1)
+        station.update([("A", "device"), ("B", "device")])
+        while not started:
+            threading.Event().wait(0.01)
+        station.stop()
+        release.set()
+        station.join(5)
+        self.assertEqual(["A"], started)
+        self.assertEqual(0, station.running_count())
+
+    def test_nothing_provisioned_isnt_success(self):
+        station = self.station()
+        station.update([])
+        self.assertTrue(station.is_idle())
+        self.assertFalse(station.all_succeeded())
+
+    def test_a_fixed_headset_clears_its_failure_from_the_display(self):
+        outcomes = {"A": [(False, "Install failed"), True]}
+        station = self.station(lambda serial, log: outcomes[serial].pop(0))
+        station.update([("A", "device")])
+        station.join(5)
+        self.assertEqual(("A", "Install failed"), station.last_failure)
+        self.clock.now += 10
+        station.update([])
+        station.update([("A", "device")])
+        station.join(5)
+        self.assertIsNone(station.last_failure)
+
     def test_a_worker_that_exits_strangely_still_counts_as_failed(self):
         def run(serial, log):
             raise SystemExit(1)

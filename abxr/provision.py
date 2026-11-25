@@ -23,7 +23,7 @@ from abxr.device import Device, \
                         DeviceWipeClientException
 from abxr.client_setup import SetupProgress, clean_up_after_failure, prepare_client
 from abxr.device_policy import is_older_firmware
-from abxr.disk_space import NotEnoughSpaceError, check_headset_space, computer_space_message, format_size, headset_space_needed
+from abxr.disk_space import NotEnoughSpaceError, check_headset_space, computer_space_message, format_size, headset_space_needed, temp_space_plan
 from abxr.display import display
 from abxr.version import version
 from abxr.station import Station, list_adb_devices
@@ -34,6 +34,8 @@ CONFIG_PACKAGE_PATH = ASSETS_PATH / Path("configuration-packages")
 CLIENT_OVERRIDE_PATH = ASSETS_PATH / Path("client")
 
 POLL_SECONDS = 2
+# How long --once keeps retrying when adb doesn't answer before it gives up.
+ONCE_ADB_WAIT_SECONDS = 60
 
 
 def complete_setup(device):
@@ -140,27 +142,33 @@ def check_headset_free_space(device, package, args, log):
 
 
 def check_computer_space(packages, args):
-    """At startup: refuse when this computer's temp folder can't hold what the headsets running at once need. Each
-    running headset holds the client and launcher, and one item of the package at a time."""
+    """At startup: fit the number of headsets run at once to this computer's temp folder, and refuse to start when
+    not even one fits. Each running headset holds the client and launcher, and one item of the package at a time.
+    The FPD runs with no flags, so it lowers --max-parallel itself rather than asking for it."""
     temp_dir = tempfile.gettempdir()
     free = shutil.disk_usage(temp_dir).free
     for package in packages:
         per_headset = package.largest_item_size() + package.client_and_launcher_size()
-        message = computer_space_message(package.path.name, free, per_headset, args.max_parallel, temp_dir)
-        if message:
-            for line in message:
-                print(line)
+        enough, fits = temp_space_plan(free, per_headset, args.max_parallel)
+        if enough:
+            continue
+        for line in computer_space_message(package.path.name, free, per_headset, args.max_parallel, temp_dir):
+            print(line)
+        if not fits:
             display.write(["Not enough space", "on this computer"])
             exit(1)
+        args.max_parallel = fits
+        display.write(["Low PC disk space", f"{fits} at a time"], wait=5)
 
 
 def provision_device(device, package, args, log):
     """Provision one headset with one package. Returns (ok, short failure reason). Each call runs on its own thread
     and opens its own handle on the package zip, so several headsets can be provisioned at once."""
-    package = ConfigurationPackage(package.path)
     timer = time.time()
+    package_path, package = package.path, None
 
     try:
+        package = ConfigurationPackage(package_path)
         with tempfile.TemporaryDirectory() as tempdir:
             # Resolve inputs before touching the headset: a bad --client path or package fails here, with no
             # cleanup, as in the Device Setup App.
@@ -221,6 +229,8 @@ def provision_device(device, package, args, log):
         return False, reason
 
     finally:
+        if package is not None:
+            package.close()
         try:
             if device.is_quest():
                 device.set_quest_sleep_enabled(True)
@@ -267,16 +277,25 @@ def provision(args):
     station = Station(run, max_parallel=args.max_parallel, only_serial=args.device_serial)
     print(f"Provisioning up to {args.max_parallel} headsets at a time. " + ("Press Ctrl+C to stop." if not args.once else ""))
 
-    adb_failing = False
+    adb_failing_since = None
     try:
         while True:
             devices = list_adb_devices()
-            if devices is None and not adb_failing:
-                print("adb didn't answer. Retrying; headsets that are done stay done.")
-            adb_failing = devices is None
+            if devices is None:
+                if adb_failing_since is None:
+                    print("adb didn't answer. Retrying; headsets that are done stay done.")
+                    adb_failing_since = time.monotonic()
+                if args.once and time.monotonic() - adb_failing_since >= ONCE_ADB_WAIT_SECONDS:
+                    print(f"adb didn't answer for {ONCE_ADB_WAIT_SECONDS} seconds. Check that adb works (adb devices).")
+                    exit(1)
+            else:
+                adb_failing_since = None
             station.update(devices)
             display.write(station.display_lines())
-            if args.once and station.is_idle():
+            # --once decides only on an answer from adb: a failed poll isn't "nothing connected".
+            if args.once and devices is not None and station.is_idle():
+                if not station.finished_count():
+                    print(f"Headset {args.device_serial} isn't connected and ready." if args.device_serial else "No headset was connected and ready.")
                 print(station.summary())
                 exit(0 if station.all_succeeded() else 1)
             time.sleep(POLL_SECONDS)

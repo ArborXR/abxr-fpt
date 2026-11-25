@@ -79,6 +79,7 @@ class ConfigurationPackage:
         self.launcher_apk = None
 
         self.root_prefix = ""
+        self._bundle_sizes = {}
         self.settings_entry = None
         self.apps = []
         self.obb_packaged_apps = []
@@ -254,13 +255,35 @@ class ConfigurationPackage:
         except Exception as e:
             raise Exception(f"Error extracting {item} to {output_path}: {e}")
         
+    def close(self):
+        if self.zip_file:
+            self.zip_file.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
     def entry_size(self, entry):
         return self.zip_file.getinfo(entry).file_size if entry else 0
 
+    def bundle_unpacked_size(self, entry):
+        """What an app bundle zip unpacks to (its APK and OBBs), read from its own directory. Falls back to the
+        bundle's size when it can't be read."""
+        if entry not in self._bundle_sizes:
+            try:
+                with self.zip_file.open(entry) as raw, zipfile.ZipFile(raw) as bundle:
+                    size = sum(info.file_size for info in bundle.infolist())
+            except Exception:
+                size = self.entry_size(entry)
+            self._bundle_sizes[entry] = size
+        return self._bundle_sizes[entry]
+
     def content_size(self):
-        """Bytes the package's apps, bundles and files take on a headset (entries are stored uncompressed)."""
-        entries = self.apps + self.obb_packaged_apps + [entry for entry, _ in self.pushes()]
-        return sum(self.entry_size(entry) for entry in entries)
+        """Bytes the package's apps, unpacked bundles and files take on a headset."""
+        entries = self.apps + [entry for entry, _ in self.pushes()]
+        return sum(self.entry_size(entry) for entry in entries) + sum(self.bundle_unpacked_size(entry) for entry in self.obb_packaged_apps)
 
     def client_and_launcher_size(self):
         return self.entry_size(self.client_apk) + self.entry_size(self.launcher_apk)
@@ -268,7 +291,7 @@ class ConfigurationPackage:
     def temp_space_needed(self, entry):
         """Temp space one item needs while it's loaded: an app bundle zip is copied out, then unpacked next to it."""
         size = self.entry_size(entry)
-        return 2 * size if entry in self.obb_packaged_apps else size
+        return size + self.bundle_unpacked_size(entry) if entry in self.obb_packaged_apps else size
 
     def largest_item_size(self):
         entries = self.apps + self.obb_packaged_apps + [entry for entry, _ in self.pushes()]

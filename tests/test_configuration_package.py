@@ -150,8 +150,27 @@ class ConfigurationPackageSizeTest(unittest.TestCase):
         self.assertEqual(self.package.content_size(), 100 + 300 + 50)
         self.assertEqual(self.package.client_and_launcher_size(), 10)
 
-    def test_an_app_bundle_needs_twice_its_size_in_temp(self):
+    def test_an_app_bundle_needs_its_size_and_its_unpacked_size_in_temp(self):
+        # Not a valid inner zip, so its unpacked size falls back to its own size.
         self.assertEqual(self.package.largest_item_size(), 600)
+
+    def test_an_app_bundle_counts_what_it_unpacks_to(self):
+        import io
+        inner = io.BytesIO()
+        with zipfile.ZipFile(inner, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+            bundle.writestr("game.apk", b"a" * 5000)
+            bundle.writestr("main.1.com.example.game.obb", b"o" * 20000)
+        path = Path(self.directory.name) / "bundle-package.zip"
+        with zipfile.ZipFile(path, "w") as zip_file:
+            zip_file.writestr(f"{PACKAGE_ID}/settings.json", json.dumps({"version": "2.0.0", "deviceModel": {"name": "Quest 3S"}}))
+            zip_file.writestr(f"{PACKAGE_ID}/client/app.xrdm.client-2026.47.0-arm64-v8a.apk", b"c")
+            zip_file.writestr(f"{PACKAGE_ID}/apps/com.example.game.zip", inner.getvalue())
+        with ConfigurationPackage(path) as package:
+            bundle_size = len(inner.getvalue())
+            self.assertLess(bundle_size, 25000)
+            self.assertEqual(package.content_size(), 25000)
+            self.assertEqual(package.largest_item_size(), bundle_size + 25000)
+        self.assertIsNone(package.zip_file.fp)
 
     def test_copying_out_stops_when_the_computer_is_full(self):
         from unittest import mock

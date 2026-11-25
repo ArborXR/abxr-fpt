@@ -67,13 +67,13 @@ class ComputerSpaceTest(unittest.TestCase):
         lines = computer_space_message("p.zip", 21 * GB, 5 * GB, 8, "/tmp")
         self.assertIn("41.0 GB", lines[0])
         self.assertIn("21.0 GB free", lines[0])
-        self.assertIn("--max-parallel 4", lines[1])
+        self.assertIn("Running 4 at a time", lines[1])
         self.assertIn("TMPDIR", lines[-1])
 
     def test_not_even_one_fits(self):
         self.assertEqual(temp_space_plan(3 * GB, 5 * GB, 8), (False, 0))
         lines = computer_space_message("p.zip", 3 * GB, 5 * GB, 8, "/tmp")
-        self.assertFalse(any("--max-parallel" in line for line in lines))
+        self.assertIn("can't start", lines[1])
 
     def test_an_empty_package_needs_only_the_headroom(self):
         self.assertEqual(temp_space_plan(2 * GB, 0, 8), (True, 8))

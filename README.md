@@ -52,11 +52,14 @@ It runs as a station:
 - **Retrying:** a headset that failed is retried by unplugging it and plugging it back in.
 - **Waiting for the headset:** headsets adb can't use yet get a message saying what to do. That covers "Allow USB debugging" not tapped, "no permissions" (on Linux, add udev rules) and "offline".
 - **If adb doesn't answer** for a moment, the station waits for it. Headsets that are done stay done.
-- **Stopping:** press Ctrl+C to stop starting new headsets and wait for the running ones to finish. Press it again to quit at once; headsets that were still running aren't finished and need a re-run.
+- **Stopping:** press Ctrl+C to stop starting new headsets, queued ones included, and wait for the running ones to finish. Press it again to quit at once; headsets that were still running aren't finished and need a re-run.
 
 Every log line starts with the headset's serial. On the FPD, the display shows what's running, queued, done, failed and not ready, plus the last failure and its reason.
 
-Exit status: `--once` exits 0 when every headset it saw was provisioned, and 1 when any failed or was never ready. Ctrl+C exits 130.
+Exit status:
+- **`--once` exits 0** when every headset it saw was provisioned.
+- **It exits 1** when any headset failed or was never ready, or when none was connected and ready (with `--device-serial`, when that headset wasn't). It also exits 1 if adb doesn't answer for 60 seconds.
+- **Ctrl+C exits 130.**
 
 By default it looks for:
 - configuration packages in `$HOME/abxr/configuration-packages` (one per device model; two packages for the same model stop it from choosing).
@@ -129,12 +132,14 @@ The ArborXR Device Setup App is the source of truth, because customers use it to
 A large package that can't fit should stop at the start with a clear message, not fail an hour in. The tool checks three times.
 
 **This computer, at startup:**
-- **The rule:** each headset that's running holds the client, the launcher and one item of the package in the temp folder. An app bundle zip counts twice, because it's copied out and then unpacked.
+- **The rule:** each headset that's running holds the client, the launcher and one item of the package in the temp folder. An app bundle needs room for its zip plus what it unpacks to.
 - **The check:** the temp folder needs that much for every headset `--max-parallel` allows, plus 1 GB.
-- **If it doesn't fit,** the tool refuses to start. It prints what's needed and what's free, and how many headsets at once would fit (`--max-parallel`). It also says how to point the temp folder at a bigger drive: `TMPDIR` on macOS and Linux, `TEMP` on Windows. The FPD display shows "Not enough space".
+- **If fewer headsets fit,** the tool runs that many at a time instead and prints what's needed and what's free. The FPD runs with no options, so it adjusts itself the same way and shows "Low PC disk space".
+- **If not even one fits,** the tool won't start. The FPD display shows "Not enough space".
+- **To run more at once,** free up space or point the temp folder at a bigger drive: `TMPDIR` on macOS and Linux, `TEMP` on Windows.
 
 **Each headset, before anything on it changes:**
-- **The check:** the tool reads the headset's free storage (`df -k /sdcard`). It needs the package's apps, bundles and files, plus the client and launcher, plus 5% and 1 GB.
+- **The check:** the tool reads the headset's free storage (`df -k /sdcard`). It needs the package's apps, unpacked app bundles and files, plus the client and launcher, plus 5% and 1 GB.
 - **If it doesn't fit,** that headset fails with the numbers ("this package needs 74.5 GB and the headset has 61.0 GB free"). Nothing on it is changed. The FPD display shows "Headset full".
 - **If the free space can't be read,** the tool logs that and carries on.
 - **Re-provisioning:** the check counts the whole package as new. To re-provision a headset that already has this content, pass `--skip-space-check`.
@@ -145,7 +150,7 @@ A large package that can't fit should stop at the start with a clear message, no
 
 ## Limits
 
-- **Temp files:** each file in the package is copied to a temporary file before it's pushed, one file at a time. The computer needs temp space for the largest single file in the package (twice the size of an app bundle zip) for each headset running at once, not for the whole package. Packages aren't streamed straight to the headset yet.
+- **Temp files:** each file in the package is copied to a temporary file before it's pushed, one file at a time. The computer needs temp space for the largest single file in the package (an app bundle's zip plus what it unpacks to) for each headset running at once, not for the whole package. Packages aren't streamed straight to the headset yet.
 - **Speed:** throughput is set by USB. One headset on its own cable takes about 37 MB/s, so 70 GB takes roughly 30 minutes.
 - **Interruptions:** a run that's stopped or unplugged partway isn't finished. Re-run that headset.
 

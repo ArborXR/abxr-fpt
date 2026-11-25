@@ -77,13 +77,14 @@ def computer_space_message(package_name, free_bytes, per_headset_bytes, max_para
         return None
     needed = per_headset_bytes * max_parallel + SPACE_HEADROOM_BYTES
     lines = [
-        f"Not enough space on this computer for {package_name}: {max_parallel} headset(s) at once need "
+        f"Not enough space on this computer for {package_name} to run {max_parallel} headset(s) at once: that needs "
         f"{format_size(needed)} in the temp folder ({temp_dir}), and it has {format_size(free_bytes)} free. "
         f"Each headset needs {format_size(per_headset_bytes)} there while it runs.",
     ]
     if fits:
-        lines.append(f"This computer has room for {fits} at once: run with --max-parallel {fits}.")
-    lines.append(TEMP_HINT)
+        lines.append(f"Running {fits} at a time instead. To run more, free up space or point the temp folder at a bigger drive: TMPDIR on macOS and Linux, TEMP on Windows.")
+    else:
+        lines.append(f"Not even one headset fits, so the tool can't start. {TEMP_HINT}")
     return lines
 
 

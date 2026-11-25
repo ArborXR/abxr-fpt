@@ -240,10 +240,8 @@ class Device:
         self.device_sleep(seconds)
 
     def set_package_enabled(self, package_name, enable):
-        if enable:
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "pm", "disable-user", "--user 0", package_name], capture_output=True, text=True)
-        else:
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "pm", "enable", "--user 0", package_name], capture_output=True, text=True)
+        action = "enable" if enable else "disable-user"
+        proc = subprocess.run(["adb", "-s", self.serial, "shell", "pm", action, "--user", "0", package_name], capture_output=True, text=True)
         
         if proc.returncode:
             raise Exception(f"Failed to toggle {package_name} enablement.")
