@@ -10,6 +10,7 @@ setup(
     name = 'abxrfpt',
     version = '0.7.0',
     packages = ['abxr'],
+    python_requires = '>=3.9',
     entry_points = {
         'console_scripts': [
             'abxr-provision = abxr.provision:main',
@@ -19,7 +20,6 @@ setup(
     install_requires = [
         'androguard',
         'adafruit-circuitpython-ssd1306',
-        'setuptools'
     ],
     include_package_data=True,
 )

@@ -7,12 +7,12 @@ name = "abxrfpt"
 version = "0.7.0"
 description = "ArborXR Field Provisioning Tools"
 readme = "README.md"
+requires-python = ">=3.9"
 authors = [{ name = "Peter Peterson", email = "peter@arborxr.com" }]
 
 dependencies = [
     "androguard",
     "adafruit-circuitpython-ssd1306",
-    "setuptools"
 ]
 
 [project.scripts]
