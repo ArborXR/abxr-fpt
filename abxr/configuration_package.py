@@ -8,6 +8,19 @@ import re
 from pathlib import Path
 import zipfile
 
+# Image folders inside a package's images/ directory. The Device Setup App puts each one under
+# /sdcard/ArborXR/Media/<folder>/ (device repo, SetupApp.Core/ConfigPackage.fs, ImageType.toDirectoryName).
+IMAGE_DIRECTORIES = [
+    "AppIcons",
+    "VideoIcons",
+    "WebXrIcons",
+    "OrganizationIcons",
+    "EnvironmentBanners",
+    "EnvironmentBackgrounds",
+    "EnvironmentSkyboxes",
+    "Wallpapers",
+]
+
 class AbxrClientApk:
     PACKAGE_NAME = "app.xrdm.client"
 
@@ -72,24 +85,22 @@ class ConfigurationPackage:
         self.client_apk = None
         self.launcher_apk = None
 
+        self.root_prefix = ""
         self.apps = []
         self.obb_packaged_apps = []
+        self.obbs = []
         self.files = []
         self.videos = []
         self.launcher_media = []
+        self.images = []
 
         self._open()
+        self._find_root_prefix()
         self._load_settings_json()
 
         self._find_client_apk()
         self._find_launcher_apk()
-        self._find_apps()
-        self._find_files()
-        self._find_videos()
-        self._find_launcher_media()
-        self._find_images()
-
-        self._split_obb_packaged_apps_from_apps()
+        self._find_content()
 
     def _open(self):
         try:
@@ -127,24 +138,84 @@ class ConfigurationPackage:
         else:
             self.launcher_apk = None
 
-    def _find_apps(self):
-        self.apps = [f for f in self.zip_file.namelist() if 'apps/' in f]
+    def _entries(self):
+        return [f for f in self.zip_file.namelist() if not f.endswith("/") and "MACOSX" not in f]
 
-    def _find_files(self):
-        self.files = [f for f in self.zip_file.namelist() if 'files/' in f]
+    def _find_root_prefix(self):
+        # A package has one root folder (its id). Same rule as the Device Setup App: the first file's leading folder.
+        entries = self._entries()
+        if entries:
+            first = entries[0].lstrip("/")
+            if "/" in first:
+                self.root_prefix = first[: first.index("/") + 1]
 
-    def _find_videos(self):
-        self.videos = [f for f in self.zip_file.namelist() if 'videos/' in f]
+    def entry_category(self, entry):
+        """The entry's top-level folder (apps, files, videos, images, ...) and the rest of its path."""
+        relative = entry.lstrip("/")
+        if self.root_prefix and relative.startswith(self.root_prefix):
+            relative = relative[len(self.root_prefix):]
 
-    def _find_launcher_media(self):
-        self.launcher_media = [f for f in self.zip_file.namelist() if 'launcher-media/' in f]
+        if "/" not in relative:
+            return relative.lower(), ""
 
-    def _find_images(self):
-        self.images = [f for f in self.zip_file.namelist() if 'images/' in f]
+        category, remainder = relative.split("/", 1)
+        return category.lower(), remainder
 
-    def _split_obb_packaged_apps_from_apps(self):
-        self.obb_packaged_apps = [f for f in self.apps if '.zip' in f]
-        self.apps = [f for f in self.apps if '.zip' not in f]
+    def _find_content(self):
+        # Sort entries by their top-level folder only. A substring match would put e.g.
+        # files/~/sdcard/videos/x.mp4 in both files and videos.
+        for entry in self._entries():
+            category, _ = self.entry_category(entry)
+            lower = entry.lower()
+
+            if category == "apps":
+                if lower.endswith(".apk"):
+                    self.apps.append(entry)
+                elif lower.endswith(".zip"):
+                    self.obb_packaged_apps.append(entry)
+                elif lower.endswith(".obb"):
+                    self.obbs.append(entry)
+            elif category == "files":
+                self.files.append(entry)
+            elif category == "videos":
+                self.videos.append(entry)
+            elif category == "images":
+                self.images.append(entry)
+            elif category == "launcher-media":
+                self.launcher_media.append(entry)
+
+    def device_path(self, entry):
+        """Where an entry goes on the device, matching the Device Setup App (SetupApp.Core/ConfigPackage.fs)."""
+        category, remainder = self.entry_category(entry)
+        file_name = remainder.split("/")[-1]
+
+        if category == "apps":
+            parts = remainder.split("/")
+            package_name = parts[0] if len(parts) >= 2 else "unknown"
+            return f"/sdcard/Android/obb/{package_name}/{file_name}"
+
+        if category == "files":
+            device_relative = remainder[2:] if remainder.startswith("~/") else remainder
+            return f"/{device_relative}"
+
+        if category == "videos":
+            return f"/sdcard/ArborXR/Videos/{file_name}"
+
+        if category == "images":
+            image_directory, _, after_directory = remainder.partition("/")
+            if image_directory in IMAGE_DIRECTORIES:
+                return f"/sdcard/ArborXR/Media/{image_directory}/{after_directory}"
+            return "/sdcard"
+
+        if category == "launcher-media":
+            return f"/sdcard/{remainder}"
+
+        raise Exception(f"No device path for package entry {entry}")
+
+    def pushes(self):
+        """Every entry that's pushed as a plain file, with its device path."""
+        entries = self.obbs + self.files + self.videos + self.images + self.launcher_media
+        return [(entry, self.device_path(entry)) for entry in entries]
 
     def created_at(self):
         try:
