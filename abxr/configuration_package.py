@@ -3,10 +3,18 @@
 # Released under the MIT License. See LICENSE file for details.
 #
 
+import io
 import json
 import re
+import shutil
+import struct
+import uuid
 from pathlib import Path
 import zipfile
+
+from abxr.disk_space import require_free_space
+from abxr.log import log
+
 
 class AbxrClientApk:
     PACKAGE_NAME = "app.xrdm.client"
@@ -59,6 +67,38 @@ class AbxrLauncherApk:
         return None
 
 
+class _FileWindow(io.RawIOBase):
+    """A read-only, seekable view of part of a file: lets zipfile read a stored zip inside the package by seeking,
+    instead of reading the whole entry the way ZipExtFile.seek does on Python before 3.12."""
+
+    def __init__(self, file, start, size):
+        self._file, self._start, self._size, self._pos = file, start, size, 0
+
+    def readable(self):
+        return True
+
+    def seekable(self):
+        return True
+
+    def tell(self):
+        return self._pos
+
+    def seek(self, offset, whence=io.SEEK_SET):
+        base = {io.SEEK_SET: 0, io.SEEK_CUR: self._pos, io.SEEK_END: self._size}[whence]
+        self._pos = max(0, min(self._size, base + offset))
+        return self._pos
+
+    def readinto(self, buffer):
+        count = min(len(buffer), self._size - self._pos)
+        if count <= 0:
+            return 0
+        self._file.seek(self._start + self._pos)
+        data = self._file.read(count)
+        buffer[:len(data)] = data
+        self._pos += len(data)
+        return len(data)
+
+
 class ConfigurationPackage:
     def __init__(self, path):
         if type(path) == str:
@@ -72,24 +112,23 @@ class ConfigurationPackage:
         self.client_apk = None
         self.launcher_apk = None
 
+        self.root_prefix = ""
+        self._bundle_sizes = {}
+        self.settings_entry = None
         self.apps = []
         self.obb_packaged_apps = []
+        self.obbs = []
         self.files = []
         self.videos = []
-        self.launcher_media = []
+        self.images = []
 
         self._open()
+        self._find_root_prefix()
         self._load_settings_json()
 
         self._find_client_apk()
         self._find_launcher_apk()
-        self._find_apps()
-        self._find_files()
-        self._find_videos()
-        self._find_launcher_media()
-        self._find_images()
-
-        self._split_obb_packaged_apps_from_apps()
+        self._find_content()
 
     def _open(self):
         try:
@@ -103,7 +142,6 @@ class ConfigurationPackage:
             self.version = self.settings.get("version", None)
             if self.version == "2.0.0":
                 self.is_xrdm2 = True
-                print("Found a v2 config package")
         except Exception as e:
             raise Exception(f"Error parsing settings.json: {e}")
         
@@ -127,30 +165,94 @@ class ConfigurationPackage:
         else:
             self.launcher_apk = None
 
-    def _find_apps(self):
-        self.apps = [f for f in self.zip_file.namelist() if 'apps/' in f]
+    def _entries(self):
+        return [f for f in self.zip_file.namelist() if not f.endswith("/") and "MACOSX" not in f]
 
-    def _find_files(self):
-        self.files = [f for f in self.zip_file.namelist() if 'files/' in f]
+    def _find_root_prefix(self):
+        # The package root is the folder that holds settings.json: the package id for portal builds, or the zip
+        # root. Using the first entry instead breaks when e.g. a .DS_Store sorts first.
+        settings_files = [entry for entry in self._entries() if entry.lstrip("/").split("/")[-1] == "settings.json"]
+        # A settings.json at the zip root wins; otherwise it must sit in a single top-level folder.
+        candidates = [entry for entry in settings_files if entry.lstrip("/").count("/") == 0]
+        if not candidates:
+            candidates = [entry for entry in settings_files if entry.lstrip("/").count("/") == 1]
+        if len(candidates) == 0:
+            raise Exception("settings.json not found at the package root or in a top-level folder. If the package was re-zipped, zip the package folder itself.")
+        if len(candidates) > 1:
+            raise Exception(f"More than one package in this zip (settings.json in {', '.join(candidates)}). Provision one package per zip.")
 
-    def _find_videos(self):
-        self.videos = [f for f in self.zip_file.namelist() if 'videos/' in f]
+        self.settings_entry = candidates[0]
+        relative = self.settings_entry.lstrip("/")
+        self.root_prefix = relative[: relative.rindex("/") + 1] if "/" in relative else ""
 
-    def _find_launcher_media(self):
-        self.launcher_media = [f for f in self.zip_file.namelist() if 'launcher-media/' in f]
+    def entry_category(self, entry):
+        """The entry's top-level folder (apps, files, videos, images, ...) and the rest of its path."""
+        relative = entry.lstrip("/")
+        if self.root_prefix and relative.startswith(self.root_prefix):
+            relative = relative[len(self.root_prefix):]
 
-    def _find_images(self):
-        self.images = [f for f in self.zip_file.namelist() if 'images/' in f]
+        if "/" not in relative:
+            return relative.lower(), ""
 
-    def _split_obb_packaged_apps_from_apps(self):
-        self.obb_packaged_apps = [f for f in self.apps if '.zip' in f]
-        self.apps = [f for f in self.apps if '.zip' not in f]
+        category, remainder = relative.split("/", 1)
+        return category.lower(), remainder
+
+    def _find_content(self):
+        # Sort entries by their top-level folder only. A substring match would put e.g.
+        # files/~/sdcard/videos/x.mp4 in both files and videos.
+        for entry in self._entries():
+            category, _ = self.entry_category(entry)
+            lower = entry.lower()
+
+            if category == "apps":
+                if lower.endswith(".apk"):
+                    self.apps.append(entry)
+                elif lower.endswith(".zip"):
+                    self.obb_packaged_apps.append(entry)
+                elif lower.endswith(".obb"):
+                    self.obbs.append(entry)
+            elif category == "files":
+                self.files.append(entry)
+            elif category == "videos":
+                self.videos.append(entry)
+            elif category == "images":
+                self.images.append(entry)
+
+    def device_path(self, entry):
+        """Where an entry goes on the device, matching the Device Setup App (SetupApp.Core/ConfigPackage.fs)."""
+        category, remainder = self.entry_category(entry)
+        file_name = remainder.split("/")[-1]
+
+        if category == "apps":
+            parts = remainder.split("/")
+            package_name = parts[0] if len(parts) >= 2 else "unknown"
+            return f"/sdcard/Android/obb/{package_name}/{file_name}"
+
+        if category == "files":
+            device_relative = remainder[2:] if remainder.startswith("~/") else remainder
+            return f"/{device_relative}"
+
+        if category == "videos":
+            return f"/sdcard/ArborXR/Videos/{file_name}"
+
+        if category == "images":
+            # images/<AppIcons|VideoIcons|...>/<file> goes to /sdcard/ArborXR/Media/<folder>/<file>, as in the Device
+            # Setup App (ImageType.toDirectoryName). Other folders don't come from the portal; they keep their path
+            # under Media so two files with the same name can't overwrite each other.
+            return f"/sdcard/ArborXR/Media/{remainder}"
+
+        raise Exception(f"No device path for package entry {entry}")
+
+    def pushes(self):
+        """Every entry that's pushed as a plain file, with its device path."""
+        entries = self.obbs + self.files + self.videos + self.images
+        return [(entry, self.device_path(entry)) for entry in entries]
 
     def created_at(self):
         try:
             return self.settings["createdAt"]
         except Exception as e:
-            print("Error getting created at: {e}")
+            log(f"Error getting created at: {e}")
             return None
 
     def device_group(self):
@@ -160,14 +262,14 @@ class ConfigurationPackage:
             else:
                 return self.settings["deviceGroup"]
         except Exception as e:
-            print("Error getting device group: {e}")
+            log(f"Error getting device group: {e}")
             return None
 
     def model_name(self):
         try:
             return self.settings["deviceModel"]["name"]
         except Exception as e:
-            print("Error getting device model name: {e}")
+            log(f"Error getting device model name: {e}")
             return None
         
     def model_names(self):
@@ -177,7 +279,7 @@ class ConfigurationPackage:
             else:
                 return self.settings["deviceModel"]["modelNames"]
         except Exception as e:
-            print("Error getting device model names: {e}")
+            log(f"Error getting device model names: {e}")
             return None
         
     def extract_item(self, item, output_path):
@@ -187,6 +289,70 @@ class ConfigurationPackage:
         except Exception as e:
             raise Exception(f"Error extracting {item} to {output_path}: {e}")
         
+    def close(self):
+        if self.zip_file:
+            self.zip_file.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def entry_size(self, entry):
+        return self.zip_file.getinfo(entry).file_size if entry else 0
+
+    def bundle_unpacked_size(self, entry):
+        """What an app bundle zip unpacks to (its APK and OBBs), read from its own directory. Falls back to the
+        bundle's size when it can't be read."""
+        if entry not in self._bundle_sizes:
+            info = self.zip_file.getinfo(entry)
+            size = info.file_size
+            # Portal packages store entries uncompressed, so the bundle's bytes sit as-is in the package file.
+            if info.compress_type == zipfile.ZIP_STORED:
+                try:
+                    with open(self.path, "rb") as package_file:
+                        package_file.seek(info.header_offset)
+                        header = package_file.read(30)
+                        if header[:4] == b"PK\x03\x04":
+                            name_length, extra_length = struct.unpack("<HH", header[26:30])
+                            start = info.header_offset + 30 + name_length + extra_length
+                            with zipfile.ZipFile(_FileWindow(package_file, start, info.file_size)) as bundle:
+                                size = sum(inner.file_size for inner in bundle.infolist())
+                except Exception:
+                    size = info.file_size
+            self._bundle_sizes[entry] = size
+        return self._bundle_sizes[entry]
+
+    def content_size(self):
+        """Bytes the package's apps, unpacked bundles and files take on a headset."""
+        entries = self.apps + [entry for entry, _ in self.pushes()]
+        return sum(self.entry_size(entry) for entry in entries) + sum(self.bundle_unpacked_size(entry) for entry in self.obb_packaged_apps)
+
+    def client_and_launcher_size(self):
+        return self.entry_size(self.client_apk) + self.entry_size(self.launcher_apk)
+
+    def temp_space_needed(self, entry):
+        """Temp space one item needs while it's loaded: an app bundle zip is copied out, then unpacked next to it."""
+        size = self.entry_size(entry)
+        return size + self.bundle_unpacked_size(entry) if entry in self.obb_packaged_apps else size
+
+    def largest_item_size(self):
+        entries = self.apps + self.obb_packaged_apps + [entry for entry, _ in self.pushes()]
+        return max((self.temp_space_needed(entry) for entry in entries), default=0)
+
+    def extract_item_flat(self, item, output_path):
+        """Extract one entry to a short random name with the same extension, like the Device Setup App's GUID
+        names: a package's full paths can pass Windows' 260-character limit inside a temp directory."""
+        require_free_space(output_path, self.entry_size(item), f"copy {Path(item).name} out of the package")
+        target = Path(output_path) / f"{uuid.uuid4().hex}{Path(item).suffix}"
+        try:
+            with self.zip_file.open(item) as source, open(target, "wb") as destination:
+                shutil.copyfileobj(source, destination, 1024 * 1024)
+            return target
+        except Exception as e:
+            raise Exception(f"Error extracting {item} to {output_path}: {e}")
+
     def extract_client_apk_from_zip(self, output_path):        
         try:
             path = self.extract_item(self.client_apk, output_path)
@@ -196,17 +362,7 @@ class ConfigurationPackage:
     
     def read_settings_json_from_zip(self):
         try:
-            settings_json_locations = [f for f in self.zip_file.namelist() if 'settings.json' in f]
-            if len(settings_json_locations) > 1:
-                raise Exception("Multiple settings.json files found in the zip file.")
-            
-            settings_json_location = settings_json_locations[0]
-
-            if settings_json_location:
-                with self.zip_file.open(settings_json_location) as settings_file:
-                    return settings_file.read()
-            else:
-                raise Exception("settings.json not found in the zip file.")
+            with self.zip_file.open(self.settings_entry) as settings_file:
+                return settings_file.read()
         except Exception as e:
             raise Exception(f"Error reading settings.json from zip: {e}")
-        

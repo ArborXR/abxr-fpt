@@ -6,13 +6,11 @@
 
 import argparse
 import os
-import platform
-import subprocess
+import shutil
 import tempfile
 import time
 
 from pathlib import Path
-from threading import Semaphore
 
 from abxr.configuration_package import AbxrClientApk, AbxrLauncherApk, ConfigurationPackage
 from abxr.device import Device, \
@@ -20,21 +18,34 @@ from abxr.device import Device, \
                         DeviceUninstallException, \
                         DeviceConfigureException, \
                         DeviceSetDeviceOwnerException, \
-                        DeviceSetEnvironmentException, \
-                        DeviceRemoveDeviceOwnerException, \
-                        DeviceConfigureApiTokenException, \
+                        DeviceGrantPermissionException, \
+                        DeviceClientDowngradeException, \
                         DeviceWipeClientException
+from abxr.client_setup import SetupProgress, clean_up_after_failure, prepare_client
+from abxr.device_policy import is_older_firmware
+from abxr.disk_space import NotEnoughSpaceError, check_headset_space, computer_space_message, format_size, headset_space_needed, temp_space_plan
 from abxr.display import display
 from abxr.version import version
+from abxr.station import Station, list_adb_devices
 
 
 ASSETS_PATH = os.environ.get("ABXR_ASSETS_PATH", Path.home() / "abxr")
 CONFIG_PACKAGE_PATH = ASSETS_PATH / Path("configuration-packages")
 CLIENT_OVERRIDE_PATH = ASSETS_PATH / Path("client")
 
-usb_event_handled = 0
-usb_semaphore = Semaphore(0)
-hotplug = False
+POLL_SECONDS = 2
+# How long --once keeps retrying when adb doesn't answer before it gives up.
+ONCE_ADB_WAIT_SECONDS = 60
+# How long --once waits for a headset to show up before deciding none is connected.
+ONCE_SETTLE_SECONDS = 10
+
+
+def complete_setup(device):
+    """The Device Setup App's CompleteSetup: sleep and Guardian come back on in provision_device's `finally`; a VIVE
+    Flow on firmware older than 1.98.8888.01 reboots, so the Holoride app doesn't auto-launch after setup."""
+    if device.is_vive_flow() and is_older_firmware(device.vive_flow_firmware_version(), "1.98.8888.01"):
+        device.reboot()
+
 
 def get_client_apk_override(args):
     if args.client:
@@ -42,24 +53,18 @@ def get_client_apk_override(args):
 
     for f in CLIENT_OVERRIDE_PATH.glob("*.apk"):
         return AbxrClientApk(f)
-    
+
     return None
 
 
-def get_connected_devices(args):
-    result = subprocess.run(["adb", "devices"], capture_output=True, text=True)
-    lines = result.stdout.strip().split("\n")[1:]
-    serial_numbers = [line.split("\t")[0] for line in lines if "device" in line]
+XRDM1_UNSUPPORTED = "XRDM 1 configuration packages are no longer supported. Build a new package in the ArborXR portal."
 
-    devices = []
 
-    for serial in serial_numbers:
-        devices.append(Device(serial))
-
-    if args.device_serial:
-        devices = [d for d in devices if d.serial == args.device_serial]
-
-    return devices
+def load_configuration_package(path):
+    package = ConfigurationPackage(path)
+    if not package.is_xrdm2:
+        raise Exception(f"{path}: {XRDM1_UNSUPPORTED}")
+    return package
 
 
 def get_configuration_packages(args):
@@ -68,13 +73,13 @@ def get_configuration_packages(args):
 
     if args.config_package:
         try:
-            packages.append(ConfigurationPackage(args.config_package))
+            packages.append(load_configuration_package(args.config_package))
         except Exception as e:
             print(f"Error loading configuration package: {e}")
     else:
         for f in CONFIG_PACKAGE_PATH.glob("*.zip"):
             try:
-                package = ConfigurationPackage(f)
+                package = load_configuration_package(f)
                 if package.model_name() in models:
                     print(f"Duplicate configuration package detected for {package.model_name()} at {package.path}")
                     print("Automatic device package selection is unavailable.")
@@ -104,176 +109,213 @@ def get_configuration_package_for_device(device, packages):
     return None
 
 
-def trigger_device_plug_event():
-    global usb_event_handled
-    if usb_event_handled == 0:
-        usb_event_handled = 1
-        print("Waking up due to USB plug event...")
-        usb_semaphore.release()
+# (exception, message for the log, short reason for the FPD display)
+FAILURE_MESSAGES = [
+    (DeviceWipeClientException, "Failed to wipe client", "Wipe failed"),
+    (DeviceUninstallException, "Failed to uninstall apk", "Uninstall failed"),
+    (DeviceClientDowngradeException, "Headset client is newer. Remove the /client override or --force-upgrade.", "Client is newer"),
+    (DeviceInstallException, "Failed to install apk", "Install failed"),
+    (DeviceGrantPermissionException, "Failed to grant client permissions", "Permission failed"),
+    (DeviceSetDeviceOwnerException, "Failed to set device owner", "Owner failed"),
+    (DeviceConfigureException, "Failed to configure device", "Configure failed"),
+]
 
 
-def usb_event_observer(action, device):
-    if action == "add":
-        trigger_device_plug_event()
+def headset_content_size(package, args):
+    """Bytes this run will put on a headset: the package's content, the launcher and, unless --package-only, the
+    client."""
+    size = package.content_size() + package.entry_size(package.launcher_apk)
+    if not args.package_only:
+        size += package.entry_size(package.client_apk)
+    return size
+
+
+def check_headset_free_space(device, package, args, log):
+    """Before anything on the headset changes: stop when its storage can't hold the package."""
+    if args.skip_space_check:
+        return
+    free = device.free_space_bytes()
+    if free is None:
+        log("Couldn't read the headset's free space; carrying on without the check.")
+        return
+    content = headset_content_size(package, args)
+    log(f"Headset has {format_size(free)} free; this package needs {format_size(headset_space_needed(content))}.")
+    check_headset_space(free, content)
+
+
+def check_computer_space(packages, args):
+    """At startup: fit the number of headsets run at once to this computer's temp folder, and refuse to start when
+    not even one fits. Each running headset holds the client and launcher, and one item of the package at a time.
+    The FPD runs with no flags, so it lowers --max-parallel itself rather than asking for it."""
+    temp_dir = tempfile.gettempdir()
+    free = shutil.disk_usage(temp_dir).free
+    for package in packages:
+        per_headset = package.largest_item_size() + package.client_and_launcher_size()
+        enough, fits = temp_space_plan(free, per_headset, args.max_parallel)
+        if enough:
+            continue
+        for line in computer_space_message(package.path.name, free, per_headset, args.max_parallel, temp_dir):
+            print(line)
+        if not fits:
+            display.write(["Not enough space", "on this computer"])
+            exit(1)
+        args.max_parallel = fits
+        display.write(["Low PC disk space", f"{fits} at a time"], wait=5)
+
+
+def provision_device(device, package, args, log):
+    """Provision one headset with one package. Returns (ok, short failure reason). Each call runs on its own thread
+    and opens its own handle on the package zip, so several headsets can be provisioned at once."""
+    timer = time.time()
+    package_path, package = package.path, None
+
+    try:
+        package = ConfigurationPackage(package_path)
+        with tempfile.TemporaryDirectory() as tempdir:
+            # Resolve inputs before touching the headset: a bad --client path or package fails here, with no
+            # cleanup, as in the Device Setup App.
+            launcher_apk_path = package.extract_item(package.launcher_apk, tempdir) if package.launcher_apk else None
+            if not args.package_only:
+                client_override = get_client_apk_override(args)
+                client_apk = client_override or package.extract_client_apk_from_zip(tempdir)
+                operator_chose_client = client_override is not None or args.force_upgrade
+                log(f"Using ArborXR client APK {client_apk.path} (version {client_apk.version})")
+
+            check_headset_free_space(device, package, args, log)
+
+            # The Device Setup App's setup steps (InstallDependencies). On a failure, clean up like it does.
+            progress = SetupProgress()
+            try:
+                if not args.package_only:
+                    if device.is_quest():
+                        progress.step = "disabling-sleep"
+                        device.set_quest_sleep_enabled(False)
+                        device.set_quest_guardian_enabled(False)
+
+                    is_hms = device.is_hms()
+                    if is_hms:
+                        log("Enrolled through Meta Horizon managed services (HMS).")
+                    elif is_hms is None:
+                        log("Couldn't tell whether this headset is enrolled through HMS.")
+
+                    prepare_client(device, client_apk, launcher_apk_path, operator_chose_client=operator_chose_client, progress=progress)
+                elif launcher_apk_path:
+                    if device.is_packaged_installed(AbxrLauncherApk.PACKAGE_NAME):
+                        device.uninstall_apk(AbxrLauncherApk.PACKAGE_NAME)
+                    device.install_apk(launcher_apk_path)
+
+                progress.step = "installing-content"
+                device.push_content(package)
+            except DeviceClientDowngradeException:
+                # Refused before the client changed; the launcher was put back.
+                raise
+            except Exception:
+                if not args.package_only and progress.should_clean_up():
+                    clean_up_after_failure(device, has_launcher=launcher_apk_path is not None)
+                raise
+
+            # BootstrapFromPackage, then CompleteSetup. Like the Device Setup App, no cleanup if these fail.
+            device.hand_off_settings(package)
+            complete_setup(device)
+
+        log("Provisioned.")
+        return True, None
+
+    except NotEnoughSpaceError as e:
+        log(str(e))
+        return False, e.short
+
+    except Exception as e:
+        message, reason = next(((text, short) for kind, text, short in FAILURE_MESSAGES if isinstance(e, kind)), ("Unhandled error", "Error"))
+        log(f"{message}: {e}")
+        return False, reason
+
+    finally:
+        if package is not None:
+            package.close()
+        try:
+            if device.is_quest():
+                device.set_quest_sleep_enabled(True)
+                device.set_quest_guardian_enabled(True)
+        except Exception as e:
+            log(f"Couldn't turn sleep and Guardian back on: {e}")
+
+        elapsed = int(time.time() - timer)
+        log(f"Finished in {elapsed // 60}m {elapsed % 60}s")
 
 
 def provision(args):
     print("ArborXR Field Provisioning Tools")
     print(f"Version: {version}")
- 
-    display.write([ "ArborXR", "Field Provisioning", f"Version: {version}"], wait=5)
-
-    devices = get_connected_devices(args)
-    if len(devices) > 0:
-        usb_semaphore.release()
+    display.write(["ArborXR", "Field Provisioning", f"Version: {version}"], wait=5)
 
     packages = get_configuration_packages(args)
     if len(packages) == 0:
         print("No configuration packages found.")
         display.write("No configuration packages found.")
-        if not hotplug:
-            exit(0)
+        if args.once:
+            exit(1)
 
-    number_of_config_packages = len(packages)
+    check_computer_space(packages, args)
 
-    while True:
-        print("Waiting for device to be connected...")
-        display.write([f"{number_of_config_packages} packages loaded", "", "Waiting for device to be connected."])
-
-        global usb_event_handled
-        usb_event_handled = 0
-        usb_semaphore.acquire()
- 
-        if hotplug:
-            print("Waiting for ADB device detection to settle...")
-            display.write(["Waiting for ADB", "device detection."])
-            time.sleep(5)
-        
-        devices = get_connected_devices(args)
-        if len(devices) == 0:
-            print("No devices connected.")
-            display.write("No devices connected.", wait=5)
-            if not hotplug:
-                exit(0)
-            continue
-
-        for device in devices:
-            package = get_configuration_package_for_device(device, packages)
-            if package is None:
-                print(f"No matching configuration package found for device model: {device.model_name} sn: {device.serial}")
-                display.write([f"No package found for device: {device.serial}"], wait=5)
-                continue
-            
-            print(f"Using configuration package: {package.path}")
-            
-            timer = time.time()
-
-            try:
-                with tempfile.TemporaryDirectory() as tempdir:
-                    if not args.package_only:
-                        client_apk = get_client_apk_override(args) or package.extract_client_apk_from_zip(tempdir)
-                        
-                        print("Using ArborXR client APK:", client_apk.path)
-                        display.write(["Provisioning device:", device.model_name, device.serial, f"XRDM: {client_apk.version}"])
-
-                        if device.is_quest():
-                            device.set_quest_sleep_enabled(False)
-                            device.set_quest_guardian_enabled(False)
-
-                        device.set_google_play_protect(False)
-
-                        #
-                        # if we need to replace the client OR fresh provision    
-                        #
-                        if device.abxr_client_version() != client_apk.version or args.force_upgrade:
-                            if device.is_packaged_installed(AbxrClientApk.PACKAGE_NAME):
-                                if package.is_xrdm2:
-                                    device.wipe_client()
-                                else:
-                                    device.remove_device_owner()
-                                    device.uninstall_apk(AbxrClientApk.PACKAGE_NAME)
-                            
-                            device.install_apk(client_apk.path)
-
-                            if device.abxr_client_version() != client_apk.version:
-                                print(f"Failed to install ArborXR Client APK on {device}")
-                                display.write("Failed to install ArborXR Client APK", wait=5)
-                                continue
-
-                            device.set_device_owner()
-                            device.set_production_environment()    
-                                
-                        else:
-                            print(f"Device {device} already has the expected ArborXR Client APK version {client_apk.version}")
-
-                    if package.launcher_apk:
-                        if device.is_packaged_installed(AbxrLauncherApk.PACKAGE_NAME):
-                            device.uninstall_apk(AbxrLauncherApk.PACKAGE_NAME)
-                        device.install_apk(package.extract_item(package.launcher_apk, tempdir))
-
-                    device.send_configuration_package(package)
-
-                    if not args.package_only:
-                        device.configure_api_token_authentication(package)
-
-                display.write(["Device provisioned!", device.serial], wait=2)
-                        
-            except DeviceWipeClientException as e:
-                print(f"Failed to wipe client: {e}")
-                display.write("Failed to wipe client", wait=5)
-
-            except DeviceRemoveDeviceOwnerException as e:
-                print(f"Failed to remove device owner: {e}")
-                display.write("Failed to remove device owner", wait=5)
-
-            except DeviceUninstallException as e:
-                print(f"Failed to uninstall apk: {e}")
-                display.write("Failed to uninstall apk", wait=5)
-
-            except DeviceInstallException as e:
-                print(f"Failed to install apk: {e}")
-                display.write("Failed to install apk", wait=5)
-
-            except DeviceSetDeviceOwnerException as e:
-                print(f"Failed to set device owner: {e}")
-                display.write("Failed to set device owner", wait=5)
-
-            except DeviceSetEnvironmentException as e:
-                print(f"Failed to set environment: {e}")
-                display.write("Failed to set environment", wait=5)
-
-            except DeviceConfigureException as e:
-                print(f"Failed to configure device: {e}")
-                display.write("Failed to configure device", wait=5)
-
-            except DeviceConfigureApiTokenException as e:
-                print(f"Failed to configure API token: {e}")
-                display.write("Failed to configure API token", wait=5)
-
-            except Exception as e:
-                print(f"Unhandled Error: {e}")
-                display.write("Unhandled Error", wait=5)
-
-            finally:
-                if device.is_quest():
-                    device.set_quest_sleep_enabled(True)
-                    device.set_quest_guardian_enabled(True)
-                
-                device.set_google_play_protect(True)
-
-                elapsed_time_sec = time.time() - timer
-                elapsed_time_min = elapsed_time_sec // 60
-                elapsed_time_sec = elapsed_time_sec % 60
-
-                print(f"Provisioning complete for {device} in {elapsed_time_min:.0f}m {elapsed_time_sec:.0f}s")
-
+    def run(serial, log):
+        # Right after a headset appears, getprop can still come back empty. Give it a few seconds before failing.
+        for _ in range(5):
+            device = Device(serial)
+            if device.model_name:
+                break
+            time.sleep(1)
         else:
-            print("No more devices to provision.")
-            print("\n")
-            display.write(["No more devices", "to provision."], wait=2)
-            
-        if not hotplug:
-            exit(0)
+            log("adb didn't report the headset's model. Replug it.")
+            return False, "No model"
+
+        package = get_configuration_package_for_device(device, packages)
+        if package is None:
+            log(f"No configuration package for device model {device.model_name}.")
+            return False, "No package"
+        log(f"Using configuration package {package.path.name}")
+        return provision_device(device, package, args, log)
+
+    station = Station(run, max_parallel=args.max_parallel, only_serial=args.device_serial)
+    print(f"Provisioning up to {args.max_parallel} headsets at a time. " + ("Press Ctrl+C to stop." if not args.once else ""))
+
+    adb_failing_since = None
+    started_at = time.monotonic()
+    try:
+        while True:
+            devices = list_adb_devices()
+            if devices is None:
+                if adb_failing_since is None:
+                    print("adb didn't answer. Retrying; headsets that are done stay done.")
+                    adb_failing_since = time.monotonic()
+                if args.once and not station.running_count() and time.monotonic() - adb_failing_since >= ONCE_ADB_WAIT_SECONDS:
+                    print(f"adb didn't answer for {ONCE_ADB_WAIT_SECONDS} seconds. Check that adb works (adb devices).")
+                    exit(1)
+            else:
+                adb_failing_since = None
+            station.update(devices)
+            display.write(station.display_lines())
+            # --once decides only on an answer from adb: a failed poll isn't "nothing connected". With nothing
+            # provisioned yet, give adb a few seconds to list headsets that were just plugged in.
+            settled = station.finished_count() or time.monotonic() - started_at >= ONCE_SETTLE_SECONDS
+            if args.once and devices is not None and station.is_idle() and settled:
+                if not station.finished_count():
+                    print(f"Headset {args.device_serial} isn't connected and ready." if args.device_serial else "No headset was connected and ready.")
+                print(station.summary())
+                exit(0 if station.all_succeeded() else 1)
+            time.sleep(POLL_SECONDS)
+    except KeyboardInterrupt:
+        station.stop()
+        running = station.running_count()
+        if running:
+            print(f"Stopping: waiting for {running} running headset(s) to finish. Press Ctrl+C again to quit now.")
+            try:
+                while station.running_count():
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                print("Quitting now. Headsets that were still running aren't finished, and sleep and Guardian may still be off on them: re-run them.")
+        print(station.summary())
+        exit(130)
 
 
 def main():
@@ -281,38 +323,36 @@ def main():
     parser.add_argument("-p", "--config-package", help="Path to configuration packages", type=str)
     parser.add_argument("-o", "--package-only", help="Only install configuration package do not provision", action="store_true")
     parser.add_argument("-c", "--client", help="Path to client APK for override", type=str)
-    parser.add_argument("-s", "--device-serial", help="Serial number of device to provision", type=str)
+    parser.add_argument("-s", "--device-serial", help="Serial number of device to provision (implies --once)", type=str)
     parser.add_argument("-f", "--force-upgrade", help="Force client install even if already installed", action="store_true")
     parser.add_argument("-l", "--list-connected-devices", help="List connected devices", action="store_true")
+    parser.add_argument("-n", "--max-parallel", help="How many headsets to provision at once (default 8)", type=int, default=8)
+    parser.add_argument("--once", help="Provision the headsets connected now, then exit", action="store_true")
+    parser.add_argument("--skip-space-check", help="Don't check the headset's free space (e.g. when re-provisioning a headset that already has this content)", action="store_true")
     args = parser.parse_args()
+
+    if args.device_serial:
+        args.once = True
+    if args.max_parallel < 1:
+        parser.error("--max-parallel must be at least 1")
 
     if not Path(ASSETS_PATH).exists():
         parser.print_usage()
         print(f"Error: ABXR_ASSETS_PATH is not set to a valid path: {ASSETS_PATH}")
         exit(1)
 
-    if platform.system() == "Linux":        
-        import pyudev
-        global hotplug
-
-        context = pyudev.Context()
-        monitor = pyudev.Monitor.from_netlink(context)
-        monitor.filter_by(subsystem='usb')
-
-        observer = pyudev.MonitorObserver(monitor, usb_event_observer)
-        observer.start()
-
-        hotplug = True
-    else:
-        usb_semaphore.release()
-
     if args.list_connected_devices:
-        devices = get_connected_devices(args)
-        for device in devices:
-            print(device)
+        devices = list_adb_devices()
+        if devices is None:
+            print("adb didn't answer.")
+            exit(1)
+        for serial, state in devices:
+            if state == "device" and (not args.device_serial or serial == args.device_serial):
+                print(serial)
         exit(0)
 
     provision(args)
+
 
 if __name__ == "__main__":
     main()
