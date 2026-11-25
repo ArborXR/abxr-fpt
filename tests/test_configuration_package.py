@@ -128,3 +128,38 @@ class ConfigurationPackageTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConfigurationPackageSizeTest(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        path = Path(self.directory.name) / "package.zip"
+        with zipfile.ZipFile(path, "w") as zip_file:
+            zip_file.writestr(f"{PACKAGE_ID}/settings.json", json.dumps({"version": "2.0.0", "deviceModel": {"name": "Quest 3S"}}))
+            zip_file.writestr(f"{PACKAGE_ID}/client/app.xrdm.client-2026.47.0-arm64-v8a.apk", b"c" * 10)
+            zip_file.writestr(f"{PACKAGE_ID}/apps/com.example.app.apk", b"a" * 100)
+            zip_file.writestr(f"{PACKAGE_ID}/apps/com.example.big.zip", b"b" * 300)
+            zip_file.writestr(f"{PACKAGE_ID}/files/~sdcard/Movies/intro.mp4", b"f" * 50)
+        self.package = ConfigurationPackage(path)
+
+    def tearDown(self):
+        self.package.zip_file.close()
+        self.directory.cleanup()
+
+    def test_content_size_counts_apps_bundles_and_files_but_not_the_client(self):
+        self.assertEqual(self.package.content_size(), 100 + 300 + 50)
+        self.assertEqual(self.package.client_and_launcher_size(), 10)
+
+    def test_an_app_bundle_needs_twice_its_size_in_temp(self):
+        self.assertEqual(self.package.largest_item_size(), 600)
+
+    def test_copying_out_stops_when_the_computer_is_full(self):
+        from unittest import mock
+        from collections import namedtuple
+        from abxr.disk_space import NotEnoughSpaceError
+
+        app = self.package.apps[0]
+        with tempfile.TemporaryDirectory() as out, mock.patch("abxr.disk_space.shutil.disk_usage", return_value=namedtuple("Usage", "total used free")(0, 0, 10)):
+            with self.assertRaises(NotEnoughSpaceError):
+                self.package.extract_item_flat(app, out)
+            self.assertEqual(list(Path(out).iterdir()), [])

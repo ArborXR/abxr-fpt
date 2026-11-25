@@ -19,6 +19,7 @@ from abxr.apk import get_package_name
 from abxr.configuration_package import AbxrClientApk, ConfigurationPackage
 from abxr.device_commands import BootstrapViaJsonFile, WipeClient
 from abxr.device_policy import CLIENT_ADMIN_RECEIVER, CLIENT_PACKAGE_NAME, is_client_admin, is_downgrade_error, parse_command_id, parse_command_progress, parse_device_owner, parse_is_hms, parse_service_result
+from abxr.disk_space import parse_df_available_bytes, require_free_space
 
 # Same components the Device Setup App uses (device repo, Core/Configuration.fs and SetupApp.Core/Configuration.fs).
 CLIENT_FINISHING_ACTIVITY = f"{CLIENT_PACKAGE_NAME}/xrdm.app.client.FinishingActivity"
@@ -169,6 +170,8 @@ class Device:
         with tempfile.TemporaryDirectory() as extract_path:
             try:
                 with zipfile.ZipFile(bundle_path, 'r') as bundle:
+                    unpacked_size = sum(info.file_size for info in bundle.infolist())
+                    require_free_space(extract_path, unpacked_size, f"unpack {fallback_package_name or bundle_path.name}")
                     bundle.extractall(extract_path)
                 package_name = fallback_package_name
                 for file in Path(extract_path).rglob("*.apk"):
@@ -559,6 +562,14 @@ class Device:
         if proc.returncode:
             raise Exception(f"Couldn't list packages on {self.serial}. {proc.stderr}")
         return f"package:{package_name}" in proc.stdout.split()
+
+    def free_space_bytes(self, path="/sdcard"):
+        """Free space on the headset's shared storage, which apps and files share on Quest and most headsets, or
+        None if it can't be read."""
+        proc = subprocess.run(["adb", "-s", self.serial, "shell", "df", "-k", path], capture_output=True, text=True)
+        if proc.returncode:
+            return None
+        return parse_df_available_bytes(proc.stdout)
 
     def vive_flow_firmware_version(self):
         return self.prop("ro.product.version")

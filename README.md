@@ -16,6 +16,7 @@ Only v2 configuration packages are supported. XRDM 1 packages are rejected; buil
 - [Running the Provisioning Tool](#running-the-provisioning-tool)
 - [Meta Quest with HMS: start to finish](#meta-quest-with-hms-start-to-finish)
 - [How a headset is provisioned](#how-a-headset-is-provisioned)
+- [Disk space checks](#disk-space-checks)
 - [Limits](#limits)
 - [Field Provisioning Device (FPD)](#field-provisioning-device-fpd)
 - [Development](#development)
@@ -25,7 +26,10 @@ Only v2 configuration packages are supported. XRDM 1 packages are rejected; buil
 - **Python 3.9 or later.**
 - **adb on the PATH** (Android SDK Platform-Tools). The tool runs one adb server for every headset, like the Device Setup App. Avoid running the Device Setup App, or another tool that ships its own adb, at the same time: two adb versions can stop each other's server.
 - **USB debugging on each headset.** For headsets enrolled in ArborXR, turn on Developer mode in the group they enrolled into, and accept "Allow USB debugging" (with "Always allow from this computer") on the headset.
-- **Disk space** for the package plus its largest single file (see [Limits](#limits)).
+- **Disk space:**
+  - On the computer, for the package itself plus temp space for each headset running at once.
+  - On each headset, for everything the package loads.
+  - The tool checks both before it starts (see [Disk space checks](#disk-space-checks)).
 
 ## Installing
 
@@ -74,6 +78,7 @@ abxr-provision --config-package <package.zip> --client <client.apk> --max-parall
 - `--force-upgrade`, `-f`: reinstall the client even when the versions match.
 - `--package-only`, `-o`: load the package onto a headset that's already set up, without touching the client.
 - `--list-connected-devices`, `-l`: list the headsets that are ready (authorized) and exit. With `--device-serial`, only that one.
+- `--skip-space-check`: don't check the headset's free space. Use it when re-provisioning a headset that already has this package's content: the check counts the whole package as new, so it can refuse a headset that would fit.
 
 ## Meta Quest with HMS: start to finish
 
@@ -119,9 +124,28 @@ The ArborXR Device Setup App is the source of truth, because customers use it to
 - **The client is never uninstalled and device ownership is never removed.** Re-provisioning uses `WipeClient`. The client keeps HMS's one-time provisioning record through a wipe (client CL-1355), but not through an uninstall.
 - **A client you choose must install.** A `/client` override or `--force-upgrade` that's older than the headset's client is refused before anything on the headset changes.
 
+## Disk space checks
+
+A large package that can't fit should stop at the start with a clear message, not fail an hour in. The tool checks three times.
+
+**This computer, at startup:**
+- **The rule:** each headset that's running holds the client, the launcher and one item of the package in the temp folder. An app bundle zip counts twice, because it's copied out and then unpacked.
+- **The check:** the temp folder needs that much for every headset `--max-parallel` allows, plus 1 GB.
+- **If it doesn't fit,** the tool refuses to start. It prints what's needed and what's free, and how many headsets at once would fit (`--max-parallel`). It also says how to point the temp folder at a bigger drive: `TMPDIR` on macOS and Linux, `TEMP` on Windows. The FPD display shows "Not enough space".
+
+**Each headset, before anything on it changes:**
+- **The check:** the tool reads the headset's free storage (`df -k /sdcard`). It needs the package's apps, bundles and files, plus the client and launcher, plus 5% and 1 GB.
+- **If it doesn't fit,** that headset fails with the numbers ("this package needs 74.5 GB and the headset has 61.0 GB free"). Nothing on it is changed. The FPD display shows "Headset full".
+- **If the free space can't be read,** the tool logs that and carries on.
+- **Re-provisioning:** the check counts the whole package as new. To re-provision a headset that already has this content, pass `--skip-space-check`.
+
+**During the run:**
+- **The check:** before each item is copied out of the package, and again before an app bundle is unpacked, the tool checks the temp folder's free space. That catches another program filling the disk mid-run.
+- **If it doesn't fit,** that headset fails with "PC disk full" and is cleaned up like any other failure in steps 2–6.
+
 ## Limits
 
-- **Temp files:** each file in the package is copied to a temporary file before it's pushed, one file at a time. The computer needs free space for the largest single file in the package (twice the size of an app bundle zip), not for the whole package. Packages aren't streamed straight to the headset yet.
+- **Temp files:** each file in the package is copied to a temporary file before it's pushed, one file at a time. The computer needs temp space for the largest single file in the package (twice the size of an app bundle zip) for each headset running at once, not for the whole package. Packages aren't streamed straight to the headset yet.
 - **Speed:** throughput is set by USB. One headset on its own cable takes about 37 MB/s, so 70 GB takes roughly 30 minutes.
 - **Interruptions:** a run that's stopped or unplugged partway isn't finished. Re-run that headset.
 
@@ -180,7 +204,7 @@ XR devices need USB power injection, because the FPD can't supply enough current
 python3 -m unittest discover -s tests
 ```
 
-The tests don't need a headset or adb. They cover package parsing and device paths, the HMS and device-owner checks, the Device Setup App's step order and cleanup, the client command protocol, and the station's parallel runs.
+The tests don't need a headset or adb. They cover package parsing and device paths, the HMS and device-owner checks, the Device Setup App's step order and cleanup, the client command protocol, the disk space checks, and the station's parallel runs.
 
 ### Building an update package for the FPD
 

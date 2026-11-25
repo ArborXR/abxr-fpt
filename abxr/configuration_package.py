@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 import zipfile
 
+from abxr.disk_space import require_free_space
 from abxr.log import log
 
 
@@ -253,9 +254,30 @@ class ConfigurationPackage:
         except Exception as e:
             raise Exception(f"Error extracting {item} to {output_path}: {e}")
         
+    def entry_size(self, entry):
+        return self.zip_file.getinfo(entry).file_size if entry else 0
+
+    def content_size(self):
+        """Bytes the package's apps, bundles and files take on a headset (entries are stored uncompressed)."""
+        entries = self.apps + self.obb_packaged_apps + [entry for entry, _ in self.pushes()]
+        return sum(self.entry_size(entry) for entry in entries)
+
+    def client_and_launcher_size(self):
+        return self.entry_size(self.client_apk) + self.entry_size(self.launcher_apk)
+
+    def temp_space_needed(self, entry):
+        """Temp space one item needs while it's loaded: an app bundle zip is copied out, then unpacked next to it."""
+        size = self.entry_size(entry)
+        return 2 * size if entry in self.obb_packaged_apps else size
+
+    def largest_item_size(self):
+        entries = self.apps + self.obb_packaged_apps + [entry for entry, _ in self.pushes()]
+        return max((self.temp_space_needed(entry) for entry in entries), default=0)
+
     def extract_item_flat(self, item, output_path):
         """Extract one entry to a short random name with the same extension, like the Device Setup App's GUID
         names: a package's full paths can pass Windows' 260-character limit inside a temp directory."""
+        require_free_space(output_path, self.entry_size(item), f"copy {Path(item).name} out of the package")
         target = Path(output_path) / f"{uuid.uuid4().hex}{Path(item).suffix}"
         try:
             with self.zip_file.open(item) as source, open(target, "wb") as destination:

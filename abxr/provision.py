@@ -6,6 +6,7 @@
 
 import argparse
 import os
+import shutil
 import tempfile
 import time
 
@@ -22,6 +23,7 @@ from abxr.device import Device, \
                         DeviceWipeClientException
 from abxr.client_setup import SetupProgress, clean_up_after_failure, prepare_client
 from abxr.device_policy import is_older_firmware
+from abxr.disk_space import NotEnoughSpaceError, check_headset_space, computer_space_message, format_size, headset_space_needed
 from abxr.display import display
 from abxr.version import version
 from abxr.station import Station, list_adb_devices
@@ -115,6 +117,43 @@ FAILURE_MESSAGES = [
 ]
 
 
+def headset_content_size(package, args):
+    """Bytes this run will put on a headset: the package's content, the launcher and, unless --package-only, the
+    client."""
+    size = package.content_size() + package.entry_size(package.launcher_apk)
+    if not args.package_only:
+        size += package.entry_size(package.client_apk)
+    return size
+
+
+def check_headset_free_space(device, package, args, log):
+    """Before anything on the headset changes: stop when its storage can't hold the package."""
+    if args.skip_space_check:
+        return
+    free = device.free_space_bytes()
+    if free is None:
+        log("Couldn't read the headset's free space; carrying on without the check.")
+        return
+    content = headset_content_size(package, args)
+    log(f"Headset has {format_size(free)} free; this package needs {format_size(headset_space_needed(content))}.")
+    check_headset_space(free, content)
+
+
+def check_computer_space(packages, args):
+    """At startup: refuse when this computer's temp folder can't hold what the headsets running at once need. Each
+    running headset holds the client and launcher, and one item of the package at a time."""
+    temp_dir = tempfile.gettempdir()
+    free = shutil.disk_usage(temp_dir).free
+    for package in packages:
+        per_headset = package.largest_item_size() + package.client_and_launcher_size()
+        message = computer_space_message(package.path.name, free, per_headset, args.max_parallel, temp_dir)
+        if message:
+            for line in message:
+                print(line)
+            display.write(["Not enough space", "on this computer"])
+            exit(1)
+
+
 def provision_device(device, package, args, log):
     """Provision one headset with one package. Returns (ok, short failure reason). Each call runs on its own thread
     and opens its own handle on the package zip, so several headsets can be provisioned at once."""
@@ -131,6 +170,8 @@ def provision_device(device, package, args, log):
                 client_apk = client_override or package.extract_client_apk_from_zip(tempdir)
                 operator_chose_client = client_override is not None or args.force_upgrade
                 log(f"Using ArborXR client APK {client_apk.path} (version {client_apk.version})")
+
+            check_headset_free_space(device, package, args, log)
 
             # The Device Setup App's setup steps (InstallDependencies). On a failure, clean up like it does.
             progress = SetupProgress()
@@ -170,6 +211,10 @@ def provision_device(device, package, args, log):
         log("Provisioned.")
         return True, None
 
+    except NotEnoughSpaceError as e:
+        log(str(e))
+        return False, e.short
+
     except Exception as e:
         message, reason = next(((text, short) for kind, text, short in FAILURE_MESSAGES if isinstance(e, kind)), ("Unhandled error", "Error"))
         log(f"{message}: {e}")
@@ -198,6 +243,8 @@ def provision(args):
         display.write("No configuration packages found.")
         if args.once:
             exit(1)
+
+    check_computer_space(packages, args)
 
     def run(serial, log):
         # Right after a headset appears, getprop can still come back empty. Give it a few seconds before failing.
@@ -257,6 +304,7 @@ def main():
     parser.add_argument("-l", "--list-connected-devices", help="List connected devices", action="store_true")
     parser.add_argument("-n", "--max-parallel", help="How many headsets to provision at once (default 8)", type=int, default=8)
     parser.add_argument("--once", help="Provision the headsets connected now, then exit", action="store_true")
+    parser.add_argument("--skip-space-check", help="Don't check the headset's free space (e.g. when re-provisioning a headset that already has this content)", action="store_true")
     args = parser.parse_args()
 
     if args.device_serial:
