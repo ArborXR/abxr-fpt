@@ -46,48 +46,19 @@ def parse_is_hms(oemconfig_query_output, oemconfig_query_error=""):
     return not ("-1" in oemconfig_query_output or "not found" in oemconfig_query_output)
 
 
-_RELEASE_VERSION = re.compile(r"^\d{4}\.\d+\.\d+$")
+# The result block `dumpsys activity service xrdm.adb.AdbService '<command>'` prints when the client's AdbService
+# took the command. Same pattern as the Device Setup App (SetupApp.Core/Adb.fs, ServiceResultRegex).
+_SERVICE_RESULT = re.compile(r"(?m)^SERVICE.*(?:\r\n|[\r\n]).+Client:(?:\r\n|[\r\n])(?P<output>.*)")
 
 
-def compare_versions(installed_version, target_version):
-    """-1, 0 or 1 as the installed client is older than, equal to or newer than the target. None unless both are
-    plain release versions (YYYY.W.N, as in the client's release tags), e.g. "2026.47.0-dev" can't be compared."""
-    if not (installed_version and target_version):
+def parse_service_result(dumpsys_output):
+    """The client's answer to an AdbService command, or None when the service didn't answer (e.g. it isn't
+    running yet, so dumpsys prints "No services match") or answered with an error."""
+    match = _SERVICE_RESULT.search(dumpsys_output)
+    if not match or not match.group("output").strip():
         return None
-    if not (_RELEASE_VERSION.match(installed_version) and _RELEASE_VERSION.match(target_version)):
-        return None
-
-    installed = tuple(int(part) for part in installed_version.split("."))
-    target = tuple(int(part) for part in target_version.split("."))
-    return (installed > target) - (installed < target)
-
-
-INSTALL = "install"
-KEEP_INSTALLED = "keep-installed"
-ALREADY_CURRENT = "already-current"
-
-
-def client_install_decision(installed_version, target_version, operator_chose_client, force_upgrade, is_v2_package):
-    """Whether to install the target client: INSTALL, KEEP_INSTALLED or ALREADY_CURRENT.
-
-    XRDM 1 packages keep this tool's original rule: install whenever the versions differ (after an uninstall).
-    v2 packages keep a newer installed client, as the Device Setup App does, unless the operator chose a client
-    (a /client override or --force-upgrade). Anything uncertain is an INSTALL attempt: for v2 packages the client
-    is installed before it's wiped, so a failed attempt leaves the headset as it was.
-    """
-    if installed_version is None:
-        return INSTALL
-
-    if not is_v2_package:
-        return INSTALL if installed_version != target_version or force_upgrade else ALREADY_CURRENT
-
-    if operator_chose_client:
-        return INSTALL
-    if (compare_versions(installed_version, target_version) or 0) > 0:
-        return KEEP_INSTALLED
-    if installed_version == target_version:
-        return ALREADY_CURRENT
-    return INSTALL
+    result = match.group("output").strip()
+    return None if "ERROR" in result else result
 
 
 def is_downgrade_error(adb_install_output):

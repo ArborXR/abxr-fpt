@@ -14,8 +14,13 @@ import zipfile
 from abxr.apk import get_package_name
 
 from abxr.configuration_package import AbxrClientApk, ConfigurationPackage
-from abxr.device_commands import BootstrapViaJsonFile, RemoveDeviceOwnership, WipeClient
-from abxr.device_policy import CLIENT_ADMIN_RECEIVER, CLIENT_PACKAGE_NAME, is_client_admin, is_downgrade_error, parse_device_owner, parse_is_hms
+from abxr.device_commands import RemoveDeviceOwnership, WipeClient
+from abxr.device_policy import CLIENT_ADMIN_RECEIVER, CLIENT_PACKAGE_NAME, is_client_admin, is_downgrade_error, parse_device_owner, parse_is_hms, parse_service_result
+
+# Same components the Device Setup App uses (device repo, Core/Configuration.fs and SetupApp.Core/Configuration.fs).
+CLIENT_FINISHING_ACTIVITY = f"{CLIENT_PACKAGE_NAME}/xrdm.app.client.FinishingActivity"
+CLIENT_ADB_SERVICE = "xrdm.adb.AdbService"
+CLIENT_SETUP_DEVICE_RECEIVER = f"{CLIENT_PACKAGE_NAME}/.SetupDeviceReceiver"
 
 # create custom exception for apk install failure
 class DeviceInstallException(Exception):
@@ -359,17 +364,13 @@ class Device:
             settings_path.write_bytes(config_pkg.read_settings_json_from_zip())
             self.push_file(settings_path, client_settings_file_location)
 
+        # Same hand-off as the Device Setup App for both package versions: the client reads settings.json, applies
+        # its configurations and enrolls with its token. Start the client first so the broadcast is allowed.
         if config_pkg.is_xrdm2:
-            command = BootstrapViaJsonFile(client_settings_file_location)
-            command_json = json.dumps(command.to_dict())
-
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "activity", "service", "xrdm.adb.AdbService",  f"'''{command_json}'''"])
-            if proc.returncode:
-                raise DeviceConfigureException("Failed to configure device with settings.json")
-        else:
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "broadcast", "-n", "app.xrdm.client/.SetupDeviceReceiver", "-a", "CONFIGURE_DEVICE", "-e", "ClientSettingsFile", client_settings_file_location])
-            if proc.returncode:
-                raise DeviceConfigureException("Failed to configure device with settings.json")
+            self.start_client_app()
+        proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "broadcast", "-n", CLIENT_SETUP_DEVICE_RECEIVER, "-a", "CONFIGURE_DEVICE", "-e", "ClientSettingsFile", client_settings_file_location], capture_output=True, text=True)
+        if proc.returncode or "Exception" in proc.stdout or "Error" in proc.stdout:
+            raise DeviceConfigureException(f"Failed to configure device with settings.json. {proc.stdout}{proc.stderr}")
 
     def force_stop_and_sleep(self, package_name, seconds):
         proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "force-stop", package_name])
@@ -415,9 +416,10 @@ class Device:
                 raise DeviceGrantPermissionException(f"Failed to grant REQUEST_INSTALL_PACKAGES to the client. {proc.stdout}{proc.stderr}")
 
     def install_client_apk(self, client_apk_path, keep_newer_installed=True):
-        """Install the client. Returns False when the headset already has a newer client and keep_newer_installed
-        is set: like the Device Setup App, a failed downgrade of the package's own client is ignored. A client the
-        operator chose (a /client override, --force-upgrade) must install, so its downgrade still fails."""
+        """Install the client or launcher. Returns False when the headset already has a newer one and
+        keep_newer_installed is set: like the Device Setup App, a refused downgrade of a package's own client or
+        launcher is ignored. A client the operator chose (a /client override, --force-upgrade) must install, so its
+        downgrade still fails."""
         proc = subprocess.run(["adb", "-s", self.serial, "install", "-r", "-t", "-g", client_apk_path], capture_output=True, text=True)
         if not proc.returncode:
             return True
@@ -491,36 +493,56 @@ class Device:
             return True
         raise DeviceRemoveDeviceOwnerException("Failed to remove device owner.")
     
-    def wipe_client(self):
-        command = WipeClient()
-        command_json = json.dumps(command.to_dict())
+    def start_client_app(self):
+        """Start the client in the foreground, as the Device Setup App does before talking to it."""
+        subprocess.run(["adb", "-s", self.serial, "shell", "am", "start", "-n", CLIENT_FINISHING_ACTIVITY], capture_output=True, text=True)
 
+    def _start_adb_service(self):
+        try:
+            sdk = int(self.prop("ro.build.version.sdk"))
+        except ValueError:
+            sdk = 0
+        start_command = "start-foreground-service" if sdk >= 26 else "startservice"
+        proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", start_command, "-n", f"{CLIENT_PACKAGE_NAME}/{CLIENT_ADB_SERVICE}"], capture_output=True, text=True)
+        if proc.returncode or "error" in proc.stdout.lower():
+            raise Exception(f"Failed to start the client's AdbService. {proc.stdout}{proc.stderr}")
+
+    def run_client_command(self, command, exception_class):
+        """Send a command to the client's AdbService the way the Device Setup App does: start the service, check
+        that it answered, and retry up to 3 times, restarting the client in between. Right after an install the
+        service isn't running yet, and dumpsys then exits 0 with "No services match"."""
+        command_json = json.dumps(command.to_dict())
+        last_output = ""
+        for attempt in range(3):
+            if attempt:
+                time.sleep(1)
+                self.start_client_app()
+            try:
+                self._start_adb_service()
+                proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "activity", "service", CLIENT_ADB_SERVICE, f"'''{command_json}'''"], capture_output=True, text=True)
+                last_output = proc.stdout + proc.stderr
+                result = parse_service_result(proc.stdout)
+                if result is not None:
+                    return result
+            except Exception as e:
+                last_output = str(e)
+        raise exception_class(f"The client on {self.serial} didn't accept {command}. {last_output}")
+
+    def wipe_client(self):
         print(f"Wiping client data on device {self.serial}...")
-        proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "activity", "service", "xrdm.adb.AdbService", f"'''{command_json}'''"], capture_output=True, text=True)
-        if proc.returncode:
-            raise DeviceWipeClientException(f"Failed to wipe client on device {self.serial} - {proc.stderr}")
+        self.run_client_command(WipeClient(), DeviceWipeClientException)
         print("Client data wiped.")
 
     def remove_device_owner_v2(self):
         self._refuse_on_hms("remove device ownership", DeviceRemoveDeviceOwnerException)
-        command = RemoveDeviceOwnership()
-        command_json = json.dumps(command.to_dict())
-
-        proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "activity", "service", "xrdm.adb.AdbService",  f"'''{command_json}'''"])
-        max_wait_sec = 10
-        wait_sec = 0
-        if proc.returncode == 0:
-            while True and wait_sec < max_wait_sec:
-                proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "device_policy", "|", "grep", "\"app.xrdm.client/.AdminReceiver\""], capture_output=True, text=True)
-                if proc.stdout == "":
-                    break
-                print("Waiting for device owner removal...")
-                time.sleep(1)
-                wait_sec += 1
-            
-            print("Device owner removal complete.")
-            return True
-        raise DeviceRemoveDeviceOwnerException("Failed to remove device owner.")
+        self.run_client_command(RemoveDeviceOwnership(), DeviceRemoveDeviceOwnerException)
+        for _ in range(10):
+            if not is_client_admin(self.device_owner()):
+                print("Device owner removal complete.")
+                return True
+            print("Waiting for device owner removal...")
+            time.sleep(1)
+        raise DeviceRemoveDeviceOwnerException("The client is still the device owner after RemoveDeviceOwnership.")
 
     def uninstall_apk(self, package_name):
         if package_name == AbxrClientApk.PACKAGE_NAME:
@@ -530,7 +552,7 @@ class Device:
             raise DeviceUninstallException(f"Failed to uninstall {package_name} on device {self.serial} - {proc.stderr}")
 
     def configure_api_token_authentication(self, config_pkg):
-        """XRDM 1 packages only. A v2 package enrolls from settings.json (BootstrapViaJsonFile), as in the Device
+        """XRDM 1 packages only. A v2 package enrolls from settings.json (the CONFIGURE_DEVICE broadcast), as in the Device
         Setup App."""
         if isinstance(config_pkg, (str, Path)):
             config_pkg = ConfigurationPackage(config_pkg)

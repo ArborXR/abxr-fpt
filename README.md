@@ -98,13 +98,23 @@ All of the command line switches are optional, and can be used interchangably. T
 
 ### Meta Quest headsets enrolled through Horizon managed services (HMS)
 
-`abxr-provision` loads a configuration package onto a Quest that Meta's Horizon Device Setup app has already enrolled, the same way the ArborXR Device Setup App does:
+The ArborXR Device Setup App is the source of truth: it's what customers use today. For v2 packages, `abxr-provision` follows the Device Setup App's steps in the same order:
+
+1. Remove the launcher.
+2. Install the package's client and launcher. A refused downgrade is ignored, so a newer client on the headset is kept.
+3. Start the client.
+4. Grant `REQUEST_INSTALL_PACKAGES` and make the client the device owner. This is skipped when the client already owns the headset, as it always does after HMS enrollment. If another MDM owns it, the run stops.
+5. Wipe the client's data if it was already installed, so it enrolls into the package's group.
+6. Push the apps, OBBs, files, videos and images to the Device Setup App's paths.
+7. Hand over `settings.json` with the same `CONFIGURE_DEVICE` broadcast.
+
+Commands to the client start its `AdbService` first and retry up to 3 times, as in the Device Setup App. If a run fails, the client is wiped so the headset can't be shipped looking enrolled. Re-run it.
+
+HMS-specific handling:
 
 - **It detects HMS** through Meta's OEMConfig provider (`content://com.oculus.oemconfig.provider/managed`).
-- **It leaves device ownership alone.** HMS made the ArborXR client the device owner, so `dpm set-device-owner` is skipped. If another MDM owns the headset, it stops and asks you to factory reset it.
-- **It re-provisions with `WipeClient`, never with an uninstall.** The client keeps HMS's provisioning record through a wipe, but not through an uninstall or a device-owner removal, and the tool refuses to do either on an HMS headset.
-- **It installs the client before it wipes it.** A failed install leaves the headset as it was. If the headset's client is newer than the package's, it's kept, like in the Device Setup App. Downgrading with a `/client` override or `--force-upgrade` only works with XRDM 1 packages, which uninstall the client first. With a v2 package, the refused downgrade stops the run before anything is wiped.
-- **The headset ends up in the package's group.** It's enrolled from the package's `settings.json`, and content already pushed over USB isn't downloaded again.
+- **It re-provisions with `WipeClient` only.** It never uninstalls the client or removes device ownership on an HMS headset. The client keeps HMS's one-time provisioning record through a wipe (client CL-1355), but not through an uninstall.
+- **A client you choose must install.** A `/client` override or `--force-upgrade` that's older than the headset's client fails before anything is wiped. Downgrading only works with XRDM 1 packages, which uninstall the client first.
 
 The headset needs USB debugging on (turn on Developer mode in the ArborXR group it enrolled into) and "Allow USB debugging" accepted on the headset.
 

@@ -26,7 +26,7 @@ from abxr.device import Device, \
                         DeviceGrantPermissionException, \
                         DeviceClientDowngradeException, \
                         DeviceWipeClientException
-from abxr.client_setup import prepare_client
+from abxr.client_setup import clean_up_after_failure, prepare_client
 from abxr.display import display
 from abxr.version import version
 
@@ -173,43 +173,50 @@ def provision(args):
 
             try:
                 with tempfile.TemporaryDirectory() as tempdir:
-                    if not args.package_only:
-                        client_override = get_client_apk_override(args)
-                        client_apk = client_override or package.extract_client_apk_from_zip(tempdir)
-                        operator_chose_client = client_override is not None or args.force_upgrade
+                    try:
+                        launcher_apk_path = package.extract_item(package.launcher_apk, tempdir) if package.launcher_apk else None
 
-                        print("Using ArborXR client APK:", client_apk.path)
-                        display.write(["Provisioning device:", device.model_name, device.serial, f"XRDM: {client_apk.version}"])
+                        if not args.package_only:
+                            client_override = get_client_apk_override(args)
+                            client_apk = client_override or package.extract_client_apk_from_zip(tempdir)
+                            operator_chose_client = client_override is not None or args.force_upgrade
 
-                        if device.is_quest():
-                            device.set_quest_sleep_enabled(False)
-                            device.set_quest_guardian_enabled(False)
+                            print("Using ArborXR client APK:", client_apk.path)
+                            display.write(["Provisioning device:", device.model_name, device.serial, f"XRDM: {client_apk.version}"])
 
-                        device.set_google_play_protect(False)
+                            if device.is_quest():
+                                device.set_quest_sleep_enabled(False)
+                                device.set_quest_guardian_enabled(False)
 
-                        is_hms = device.is_hms()
-                        if is_hms:
-                            print(f"Device {device} is enrolled through Meta Horizon managed services (HMS).")
-                        elif is_hms is None:
-                            print(f"Couldn't tell whether device {device} is enrolled through HMS.")
+                            device.set_google_play_protect(False)
 
-                        prepare_client(
-                            device,
-                            package,
-                            client_apk,
-                            operator_chose_client=operator_chose_client,
-                            force_upgrade=args.force_upgrade,
-                        )
+                            is_hms = device.is_hms()
+                            if is_hms:
+                                print(f"Device {device} is enrolled through Meta Horizon managed services (HMS).")
+                            elif is_hms is None:
+                                print(f"Couldn't tell whether device {device} is enrolled through HMS.")
 
-                    if package.launcher_apk:
-                        if device.is_packaged_installed(AbxrLauncherApk.PACKAGE_NAME):
-                            device.uninstall_apk(AbxrLauncherApk.PACKAGE_NAME)
-                        device.install_apk(package.extract_item(package.launcher_apk, tempdir))
+                            prepare_client(
+                                device,
+                                package,
+                                client_apk,
+                                launcher_apk_path,
+                                operator_chose_client=operator_chose_client,
+                                force_upgrade=args.force_upgrade,
+                            )
+                        elif launcher_apk_path:
+                            if device.is_packaged_installed(AbxrLauncherApk.PACKAGE_NAME):
+                                device.uninstall_apk(AbxrLauncherApk.PACKAGE_NAME)
+                            device.install_apk(launcher_apk_path)
 
-                    device.send_configuration_package(package)
+                        device.send_configuration_package(package)
 
-                    if not args.package_only and not package.is_xrdm2:
-                        device.configure_api_token_authentication(package)
+                        if not args.package_only and not package.is_xrdm2:
+                            device.configure_api_token_authentication(package)
+                    except Exception:
+                        if not args.package_only:
+                            clean_up_after_failure(device, package)
+                        raise
 
                 display.write(["Device provisioned!", device.serial], wait=2)
                         
