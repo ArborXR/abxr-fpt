@@ -34,10 +34,17 @@ def is_client_admin(component):
     return package_name == CLIENT_PACKAGE_NAME and class_name == f"{CLIENT_PACKAGE_NAME}.AdminReceiver"
 
 
-def parse_is_hms(oemconfig_query_output):
+def parse_is_hms(oemconfig_query_output, oemconfig_query_error=""):
     """Whether Meta's OEMConfig provider reports the headset as managed by Horizon managed services (HMS).
 
-    Same check as the Device Setup App (SetupApp.Core/Adb.fs, GetIsHms): the query for
-    content://com.oculus.oemconfig.provider/managed returns -1 or "not found" when the headset isn't managed.
+    Based on the Device Setup App (SetupApp.Core/Adb.fs, GetIsHms): any stderr means no answer, and a managed
+    headset's row doesn't contain -1 or "not found". Stricter than it in one way: no result row means not HMS.
     """
+    if oemconfig_query_error.strip() or "Row:" not in oemconfig_query_output:
+        return False
     return not ("-1" in oemconfig_query_output or "not found" in oemconfig_query_output)
+
+
+def is_downgrade_error(adb_install_output):
+    """Whether `adb install` failed because the APK is older than the installed version."""
+    return "DOWNGRADE" in adb_install_output.upper()

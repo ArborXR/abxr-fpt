@@ -5,6 +5,8 @@
 
 import json
 import re
+import shutil
+import uuid
 from pathlib import Path
 import zipfile
 
@@ -86,6 +88,7 @@ class ConfigurationPackage:
         self.launcher_apk = None
 
         self.root_prefix = ""
+        self.settings_entry = None
         self.apps = []
         self.obb_packaged_apps = []
         self.obbs = []
@@ -142,12 +145,20 @@ class ConfigurationPackage:
         return [f for f in self.zip_file.namelist() if not f.endswith("/") and "MACOSX" not in f]
 
     def _find_root_prefix(self):
-        # A package has one root folder (its id). Same rule as the Device Setup App: the first file's leading folder.
-        entries = self._entries()
-        if entries:
-            first = entries[0].lstrip("/")
-            if "/" in first:
-                self.root_prefix = first[: first.index("/") + 1]
+        # The package root is the folder that holds settings.json: the package id for portal builds, or the zip
+        # root. Using the first entry instead breaks when e.g. a .DS_Store sorts first.
+        candidates = [
+            entry for entry in self._entries()
+            if entry.lstrip("/").split("/")[-1] == "settings.json" and entry.lstrip("/").count("/") <= 1
+        ]
+        if len(candidates) == 0:
+            raise Exception("settings.json not found at the package root.")
+        if len(candidates) > 1:
+            raise Exception("Multiple settings.json files found at the package root.")
+
+        self.settings_entry = candidates[0]
+        relative = self.settings_entry.lstrip("/")
+        self.root_prefix = relative[: relative.rindex("/") + 1] if "/" in relative else ""
 
     def entry_category(self, entry):
         """The entry's top-level folder (apps, files, videos, images, ...) and the rest of its path."""
@@ -205,10 +216,11 @@ class ConfigurationPackage:
             image_directory, _, after_directory = remainder.partition("/")
             if image_directory in IMAGE_DIRECTORIES:
                 return f"/sdcard/ArborXR/Media/{image_directory}/{after_directory}"
-            return "/sdcard"
+            return f"/sdcard/{file_name}"
 
         if category == "launcher-media":
-            return f"/sdcard/{remainder}"
+            # XRDM 1 packages only. Kept where this tool has always put it.
+            return f"/sdcard/launcher-media/{remainder}"
 
         raise Exception(f"No device path for package entry {entry}")
 
@@ -258,6 +270,17 @@ class ConfigurationPackage:
         except Exception as e:
             raise Exception(f"Error extracting {item} to {output_path}: {e}")
         
+    def extract_item_flat(self, item, output_path):
+        """Extract one entry to a short random name with the same extension, like the Device Setup App's GUID
+        names: a package's full paths can pass Windows' 260-character limit inside a temp directory."""
+        target = Path(output_path) / f"{uuid.uuid4().hex}{Path(item).suffix}"
+        try:
+            with self.zip_file.open(item) as source, open(target, "wb") as destination:
+                shutil.copyfileobj(source, destination, 1024 * 1024)
+            return target
+        except Exception as e:
+            raise Exception(f"Error extracting {item} to {output_path}: {e}")
+
     def extract_client_apk_from_zip(self, output_path):        
         try:
             path = self.extract_item(self.client_apk, output_path)
@@ -267,17 +290,7 @@ class ConfigurationPackage:
     
     def read_settings_json_from_zip(self):
         try:
-            settings_json_locations = [f for f in self.zip_file.namelist() if 'settings.json' in f]
-            if len(settings_json_locations) > 1:
-                raise Exception("Multiple settings.json files found in the zip file.")
-            
-            settings_json_location = settings_json_locations[0]
-
-            if settings_json_location:
-                with self.zip_file.open(settings_json_location) as settings_file:
-                    return settings_file.read()
-            else:
-                raise Exception("settings.json not found in the zip file.")
+            with self.zip_file.open(self.settings_entry) as settings_file:
+                return settings_file.read()
         except Exception as e:
             raise Exception(f"Error reading settings.json from zip: {e}")
-        

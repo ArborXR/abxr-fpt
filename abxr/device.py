@@ -15,7 +15,7 @@ from abxr.apk import get_package_name
 
 from abxr.configuration_package import AbxrClientApk, ConfigurationPackage
 from abxr.device_commands import BootstrapViaJsonFile, RemoveDeviceOwnership, WipeClient
-from abxr.device_policy import CLIENT_ADMIN_RECEIVER, is_client_admin, parse_device_owner, parse_is_hms
+from abxr.device_policy import CLIENT_ADMIN_RECEIVER, CLIENT_PACKAGE_NAME, is_client_admin, is_downgrade_error, parse_device_owner, parse_is_hms
 
 # create custom exception for apk install failure
 class DeviceInstallException(Exception):
@@ -328,18 +328,18 @@ class Device:
 
         for app in config_pkg.apps:
             with tempfile.TemporaryDirectory() as extract_path:
-                item = config_pkg.extract_item(app, extract_path)
+                item = config_pkg.extract_item_flat(app, extract_path)
                 self.install_apk(item)
 
         for obb_packaged_app in config_pkg.obb_packaged_apps:
             with tempfile.TemporaryDirectory() as extract_path:
-                item = config_pkg.extract_item(obb_packaged_app, extract_path)
+                item = config_pkg.extract_item_flat(obb_packaged_app, extract_path)
                 self.install_apk_obb_package(item)
 
         # Loose OBBs, files, videos, images and launcher media, to the same paths the Device Setup App uses.
         for entry, device_path in config_pkg.pushes():
             with tempfile.TemporaryDirectory() as extract_path:
-                item = config_pkg.extract_item(entry, extract_path)
+                item = config_pkg.extract_item_flat(entry, extract_path)
                 self.push_file(item, device_path)
 
         # Write settings.json to a closed file: on Windows adb can't read a NamedTemporaryFile that's still open.
@@ -386,9 +386,36 @@ class Device:
         proc = subprocess.run(["adb", "-s", self.serial, "shell", "content", "query", "--uri", "content://com.oculus.oemconfig.provider/managed"], capture_output=True, text=True)
         if proc.returncode:
             return False
-        return parse_is_hms(proc.stdout)
+        return parse_is_hms(proc.stdout, proc.stderr)
+
+    def android_major_version(self):
+        try:
+            return int(self.prop("ro.build.version.release").split(".")[0])
+        except ValueError:
+            return 0
+
+    def grant_client_permissions(self):
+        # Like the Device Setup App: on Android 11+ the client needs REQUEST_INSTALL_PACKAGES to write to
+        # Android/obb and Android/data. `adb install -g` doesn't cover it because it isn't a runtime permission.
+        if self.android_major_version() >= 11:
+            proc = subprocess.run(["adb", "-s", self.serial, "shell", "appops", "set", CLIENT_PACKAGE_NAME, "REQUEST_INSTALL_PACKAGES", "allow"], capture_output=True, text=True)
+            if proc.returncode or proc.stdout.strip():
+                raise DeviceSetDeviceOwnerException(f"Failed to grant REQUEST_INSTALL_PACKAGES to the client. {proc.stdout}{proc.stderr}")
+
+    def install_client_apk(self, client_apk_path):
+        """Install the package's client. Returns False when the headset already has a newer client: like the
+        Device Setup App, a failed downgrade of the client is ignored and the newer one is kept."""
+        proc = subprocess.run(["adb", "-s", self.serial, "install", "-r", "-t", "-g", client_apk_path], capture_output=True, text=True)
+        if not proc.returncode:
+            return True
+        if is_downgrade_error(proc.stdout + proc.stderr):
+            print(f"Device {self.serial} has a newer ArborXR client than the package. Keeping it.")
+            return False
+        raise DeviceInstallException(f"Failed to install {client_apk_path} on device {self.serial} - {proc.stderr}")
 
     def set_device_owner(self):
+        self.grant_client_permissions()
+
         owner = self.device_owner()
         if is_client_admin(owner):
             # HMS headsets, and headsets provisioned before: our client already owns the device, and
@@ -423,14 +450,14 @@ class Device:
         if proc.returncode:
             raise DeviceSetEnvironmentException("Failed to set production environment.")
 
-    def _refuse_on_hms(self, action):
+    def _refuse_on_hms(self, action, exception_class):
         # HMS records how the headset was provisioned only at enrollment. Our client keeps it through a
         # WipeClient (client CL-1355), but removing device ownership or uninstalling the client loses it.
         if self.is_hms():
-            raise DeviceRemoveDeviceOwnerException(f"Not allowed to {action} on HMS headset {self.serial}. Use WipeClient instead.")
+            raise exception_class(f"Not allowed to {action} on HMS headset {self.serial}. Use WipeClient instead.")
 
     def remove_device_owner(self):
-        self._refuse_on_hms("remove device ownership")
+        self._refuse_on_hms("remove device ownership", DeviceRemoveDeviceOwnerException)
         proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "broadcast", "-n", "app.xrdm.client/.AdminRemover", "-a", "REMOVE_DEVICE_OWNER"])
         max_wait_sec = 10
         wait_sec = 0
@@ -458,7 +485,7 @@ class Device:
         print("Client data wiped.")
 
     def remove_device_owner_v2(self):
-        self._refuse_on_hms("remove device ownership")
+        self._refuse_on_hms("remove device ownership", DeviceRemoveDeviceOwnerException)
         command = RemoveDeviceOwnership()
         command_json = json.dumps(command.to_dict())
 
@@ -480,7 +507,7 @@ class Device:
 
     def uninstall_apk(self, package_name):
         if package_name == AbxrClientApk.PACKAGE_NAME:
-            self._refuse_on_hms("uninstall the ArborXR client")
+            self._refuse_on_hms("uninstall the ArborXR client", DeviceUninstallException)
         proc = subprocess.run(["adb", "-s", self.serial, "uninstall", package_name], capture_output=True, text=True)
         if proc.returncode:
             raise DeviceUninstallException(f"Failed to uninstall {package_name} on device {self.serial} - {proc.stderr}")

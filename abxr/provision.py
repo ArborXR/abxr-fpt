@@ -201,9 +201,9 @@ def provision(args):
                                 device.uninstall_apk(AbxrClientApk.PACKAGE_NAME)
 
                         if needs_client_install:
-                            device.install_apk(client_apk.path)
+                            installed = device.install_client_apk(client_apk.path)
 
-                            if device.abxr_client_version() != client_apk.version:
+                            if installed and device.abxr_client_version() != client_apk.version:
                                 print(f"Failed to install ArborXR Client APK on {device}")
                                 display.write("Failed to install ArborXR Client APK", wait=5)
                                 continue

@@ -1,6 +1,6 @@
 import unittest
 
-from abxr.device_policy import is_client_admin, parse_device_owner, parse_is_hms
+from abxr.device_policy import is_client_admin, is_downgrade_error, parse_device_owner, parse_is_hms
 
 DUMPSYS_OWNED_BY_CLIENT = """Current Device Policy Manager state:
   Immutable state:
@@ -39,7 +39,15 @@ class DevicePolicyTest(unittest.TestCase):
     def test_reads_hms_from_the_oemconfig_provider(self):
         self.assertTrue(parse_is_hms("Row: 0 managed=1"))
         self.assertFalse(parse_is_hms("Row: 0 managed=-1"))
-        self.assertFalse(parse_is_hms("Error while accessing provider:com.oculus.oemconfig.provider\njava.lang.IllegalArgumentException: Unknown URL ... not found"))
+
+    def test_no_answer_from_the_provider_is_not_hms(self):
+        self.assertFalse(parse_is_hms("", "Error while accessing provider:com.oculus.oemconfig.provider\nCould not find provider"))
+        self.assertFalse(parse_is_hms(""))
+        self.assertFalse(parse_is_hms("No result found."))
+
+    def test_recognises_a_client_downgrade(self):
+        self.assertTrue(is_downgrade_error("adb: failed to install c.apk: Failure [INSTALL_FAILED_VERSION_DOWNGRADE: Downgrade detected]"))
+        self.assertFalse(is_downgrade_error("adb: failed to install c.apk: Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE]"))
 
 
 if __name__ == "__main__":
