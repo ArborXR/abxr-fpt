@@ -1,3 +1,2 @@
 adafruit-circuitpython-ssd1306
-setuptools
 androguard
