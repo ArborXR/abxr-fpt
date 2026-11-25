@@ -68,6 +68,7 @@ class ConfigurationPackageTest(unittest.TestCase):
             "images/AppIcons/icon.png",
             "images/Wallpapers/wallpaper.png",
             "images/Unknown/a/thing.png",
+            "images/logo.png",
             "launcher-media/backgrounds/home.png",
         )
 
@@ -79,6 +80,7 @@ class ConfigurationPackageTest(unittest.TestCase):
                 f"{PACKAGE_ID}/images/AppIcons/icon.png": "/sdcard/ArborXR/Media/AppIcons/icon.png",
                 f"{PACKAGE_ID}/images/Wallpapers/wallpaper.png": "/sdcard/ArborXR/Media/Wallpapers/wallpaper.png",
                 f"{PACKAGE_ID}/images/Unknown/a/thing.png": "/sdcard/ArborXR/Media/Unknown/a/thing.png",
+                f"{PACKAGE_ID}/images/logo.png": "/sdcard/ArborXR/Media/logo.png",
                 f"{PACKAGE_ID}/launcher-media/backgrounds/home.png": "/sdcard/launcher-media/backgrounds/home.png",
             },
             dict(package.pushes()),

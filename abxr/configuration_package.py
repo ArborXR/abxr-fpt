@@ -143,7 +143,7 @@ class ConfigurationPackage:
         if len(candidates) == 0:
             raise Exception("settings.json not found at the package root or in a top-level folder. If the package was re-zipped, zip the package folder itself.")
         if len(candidates) > 1:
-            raise Exception("Multiple settings.json files found at the package root.")
+            raise Exception(f"More than one package in this zip (settings.json in {', '.join(candidates)}). Provision one package per zip.")
 
         self.settings_entry = candidates[0]
         relative = self.settings_entry.lstrip("/")

@@ -25,6 +25,7 @@ from abxr.device import Device, \
                         DeviceConfigureApiTokenException, \
                         DeviceGrantPermissionException, \
                         DeviceWipeClientException
+from abxr.device_policy import ALREADY_CURRENT, INSTALL, KEEP_INSTALLED, ClientDowngradeRefused, client_install_decision
 from abxr.display import display
 from abxr.version import version
 
@@ -172,8 +173,10 @@ def provision(args):
             try:
                 with tempfile.TemporaryDirectory() as tempdir:
                     if not args.package_only:
-                        client_apk = get_client_apk_override(args) or package.extract_client_apk_from_zip(tempdir)
-                        
+                        client_override = get_client_apk_override(args)
+                        client_apk = client_override or package.extract_client_apk_from_zip(tempdir)
+                        operator_chose_client = client_override is not None or args.force_upgrade
+
                         print("Using ArborXR client APK:", client_apk.path)
                         display.write(["Provisioning device:", device.model_name, device.serial, f"XRDM: {client_apk.version}"])
 
@@ -187,10 +190,25 @@ def provision(args):
                         if is_hms:
                             print(f"Device {device} is enrolled through Meta Horizon managed services (HMS).")
                         elif is_hms is None:
-                            print(f"Couldn't tell whether device {device} is enrolled through HMS. Treating it as HMS for anything destructive.")
+                            print(f"Couldn't tell whether device {device} is enrolled through HMS.")
 
+                        # Decide the client install before wiping anything, so a run can't stop with the client
+                        # wiped and the package not loaded.
                         installed_version = device.abxr_client_version()
-                        needs_client_install = installed_version != client_apk.version or args.force_upgrade
+                        try:
+                            decision = client_install_decision(
+                                installed_version,
+                                client_apk.version,
+                                operator_chose_client=operator_chose_client,
+                                force_upgrade=args.force_upgrade,
+                                is_v2_package=package.is_xrdm2,
+                            )
+                        except ClientDowngradeRefused as e:
+                            raise DeviceInstallException(f"Device {device}: {e}")
+                        needs_client_install = decision == INSTALL
+
+                        if decision == KEEP_INSTALLED:
+                            print(f"Device {device} has client {installed_version}, newer than the package's {client_apk.version}. Keeping it.")
 
                         if installed_version is not None:
                             if package.is_xrdm2:
@@ -204,17 +222,16 @@ def provision(args):
                                 device.uninstall_apk(AbxrClientApk.PACKAGE_NAME)
 
                         if needs_client_install:
-                            client_override = get_client_apk_override(args)
                             installed = device.install_client_apk(
                                 client_apk.path,
-                                keep_newer_installed=client_override is None and not args.force_upgrade,
+                                keep_newer_installed=not operator_chose_client,
                             )
 
                             if installed and device.abxr_client_version() != client_apk.version:
                                 print(f"Failed to install ArborXR Client APK on {device}")
                                 display.write("Failed to install ArborXR Client APK", wait=5)
                                 continue
-                        else:
+                        elif decision == ALREADY_CURRENT:
                             print(f"Device {device} already has the expected ArborXR Client APK version {client_apk.version}")
 
                         # A no-op when our client already owns the device, which is always true on HMS headsets.

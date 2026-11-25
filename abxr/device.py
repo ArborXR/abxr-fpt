@@ -157,19 +157,19 @@ class Device:
         if proc.returncode:
             raise Exception(f"Failed to create directory {path} on device {self.serial}")
     
-    def install_apk_obb_package(self, package_name, fallback_package_name=None):
+    def install_apk_obb_package(self, bundle_path, fallback_package_name=None):
         """Install an app bundle zip. Its OBBs go to the package name of the APK inside it, or, like the Device
         Setup App, to the bundle's own name when it has no APK."""
-        if type(package_name) == str:
-            package_name = Path(package_name)
+        if type(bundle_path) == str:
+            bundle_path = Path(bundle_path)
 
-        if not package_name.suffix.lower() == ".zip":
-            print(f"Skipping non-ZIP packaged file. {package_name}")
-            raise DeviceInstallException(f"non-ZIP packaged file. {package_name}")
-        
+        if not bundle_path.suffix.lower() == ".zip":
+            print(f"Skipping non-ZIP packaged file. {bundle_path}")
+            raise DeviceInstallException(f"non-ZIP packaged file. {bundle_path}")
+
         with tempfile.TemporaryDirectory() as extract_path:
             try:
-                zipfile.ZipFile(package_name, 'r').extractall(extract_path)
+                zipfile.ZipFile(bundle_path, 'r').extractall(extract_path)
                 package_name = fallback_package_name
                 for file in Path(extract_path).rglob("*.apk"):
                     if not file.name.startswith("."):
@@ -183,7 +183,7 @@ class Device:
                         self.push_file(file, f"/sdcard/Android/obb/{package_name}/{file.name}")        
             
             except NotImplementedError:
-                print(f"Skipping invalid zip package format. {package_name}")            
+                print(f"Skipping invalid zip package format. {fallback_package_name or bundle_path}")            
         
     
     def install_apk(self, package_name):
@@ -460,8 +460,9 @@ class Device:
     def _refuse_on_hms(self, action, exception_class):
         # HMS records how the headset was provisioned only at enrollment. Our client keeps it through a
         # WipeClient (client CL-1355), but removing device ownership or uninstalling the client loses it.
-        # Refuse when the HMS check gives no answer too: losing an HMS enrollment is worse than a refused reinstall.
-        if self.is_hms() is not False:
+        # Refuse on a definite HMS answer only: these steps run only for XRDM 1 packages, which can't be HMS
+        # enrolled, and the Device Setup App also treats an unclear answer as not HMS.
+        if self.is_hms() is True:
             raise exception_class(f"Not allowed to {action} on HMS headset {self.serial}. Use WipeClient instead.")
 
     def remove_device_owner(self):
