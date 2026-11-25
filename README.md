@@ -85,18 +85,29 @@ Then it can be run using
 ```sh
 abxr-provision
 ```
-On non-Linux systems (MacOS/Windows) will start the provisioner in "single shot mode". It loads with the default options:
+It runs as a station: it watches `adb devices` (every 2 seconds, on Windows, macOS and Linux) and provisions each headset that's plugged in, several at once. A headset that's done or failed isn't touched again until it's unplugged, so a station can keep running all day. Press Ctrl+C to stop. A headset still waiting on "Allow USB debugging" gets a prompt to tap it.
+
+Default options:
 - Searches for configuration packages in $HOME/abxr/configuration-packages
 - Searches for any special client APK overrides in $HOME/abxr/client
 
-You can override the base path by setting the `ABXR_ARCHIVE_PATH` environment variable before starting the provisioning tool.
+You can override the base path by setting the `ABXR_ASSETS_PATH` environment variable before starting the provisioning tool.
 
-You can also pass arguments to the application which allow to specify exact locations of the configuration packages, client, or specific device serial numbers to match. This is useful when using the application in a multi-device environment
+Options (all optional):
 
 ```sh
-abxr-provision --config-package <path-to-config-packages> --client <path-to-client-for-override> --device-serial <specific-device-to-target> --force-upgrade
+abxr-provision --config-package <package.zip> --client <client.apk> --max-parallel 8 --once
 ```
-All of the command line switches are optional, and can be used interchangably. The force upgrade option will always reinstall the client even if the versions match.
+
+- `--config-package`, `-p`: use this package instead of searching the folder.
+- `--client`, `-c`: use this client APK instead of the package's. It can't be older than the client on the headset.
+- `--max-parallel`, `-n`: how many headsets to provision at once (default 8). On one USB 3 hub, 8 headsets share about 300 MB/s.
+- `--once`: provision the headsets connected now, then exit. It waits up to 60 seconds for "Allow USB debugging" on a headset that asks for it.
+- `--device-serial`, `-s`: provision only this headset. Implies `--once`.
+- `--force-upgrade`, `-f`: reinstall the client even when the versions match.
+- `--list-connected-devices`, `-l`: list the ready headsets and exit.
+
+Every log line starts with the headset's serial. On the Field Provisioning Device, the display shows a running summary (running, queued, done, failed, waiting for Allow).
 
 ### How a headset is provisioned (same as the ArborXR Device Setup App)
 
