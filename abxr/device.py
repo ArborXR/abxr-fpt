@@ -13,6 +13,7 @@ from pathlib import Path
 import tempfile
 import zipfile
 
+from abxr.log import log
 from abxr.apk import get_package_name
 
 from abxr.configuration_package import AbxrClientApk, ConfigurationPackage
@@ -151,7 +152,7 @@ class Device:
         return False
     
     def mkdir(self, path):
-        proc = subprocess.run(["adb", "-s", self.serial, "shell", "mkdir", "-p", path])
+        proc = subprocess.run(["adb", "-s", self.serial, "shell", "mkdir", "-p", path], capture_output=True, text=True)
         if proc.returncode:
             raise Exception(f"Failed to create directory {path} on device {self.serial}")
     
@@ -162,7 +163,7 @@ class Device:
             bundle_path = Path(bundle_path)
 
         if not bundle_path.suffix.lower() == ".zip":
-            print(f"Skipping non-ZIP packaged file. {bundle_path}")
+            log(f"Skipping non-ZIP packaged file. {bundle_path}")
             raise DeviceInstallException(f"non-ZIP packaged file. {bundle_path}")
 
         with tempfile.TemporaryDirectory() as extract_path:
@@ -177,12 +178,12 @@ class Device:
 
                 for file in Path(extract_path).rglob("*.obb"):
                     if not file.name.startswith("."):
-                        print(f"Installing OBB: {file}")
+                        log(f"Installing OBB: {file}")
                         self.mkdir(f"/sdcard/Android/obb/{package_name}")
                         self.push_file(file, f"/sdcard/Android/obb/{package_name}/{file.name}")        
             
             except NotImplementedError:
-                print(f"Skipping invalid zip package format. {fallback_package_name or bundle_path}")
+                log(f"Skipping invalid zip package format. {fallback_package_name or bundle_path}")
             except zipfile.BadZipFile as e:
                 raise DeviceInstallException(f"App bundle {fallback_package_name or bundle_path} isn't a valid zip: {e}")            
         
@@ -192,44 +193,44 @@ class Device:
             package_name = Path(package_name)
 
         if not package_name.suffix.lower() == ".apk":
-            print(f"Skipping non-APK file. {package_name}")
+            log(f"Skipping non-APK file. {package_name}")
             raise DeviceInstallException(f"non-APK file. {package_name}")
 
-        print(f"Installing APK: {package_name}")
+        log(f"Installing APK: {package_name}")
         proc = subprocess.run(["adb", "-s", self.serial, "install", "-r", "-t", "-g", package_name], capture_output=True, text=True)
         if proc.returncode:
             raise DeviceInstallException(f"Failed to install {package_name} on device {self.serial} - {proc.stderr}")
         
     def push_file(self, local_file, remote_file):
-        proc = subprocess.run(["adb", "-s", self.serial, "push", local_file, remote_file])
+        proc = subprocess.run(["adb", "-s", self.serial, "push", local_file, remote_file], capture_output=True, text=True)
         if proc.returncode:
-            raise DeviceInstallException(f"Failed to push {local_file} to {remote_file} on device {self.serial}")
+            raise DeviceInstallException(f"Failed to push {local_file} to {remote_file} on device {self.serial}. {proc.stderr.strip()}")
         
     def set_quest_sleep_enabled(self, enable):
         if enable:
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "broadcast", "-a", "com.oculus.vrpowermanager.automation_disable", "&&", "svc", "power", "stayon", "false"])
+            proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "broadcast", "-a", "com.oculus.vrpowermanager.automation_disable", "&&", "svc", "power", "stayon", "false"], capture_output=True, text=True)
         else:
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "svc", "power", "stayon", "true", "&&", "am", "broadcast", "-a", "com.oculus.vrpowermanager.prox_close"])   
+            proc = subprocess.run(["adb", "-s", self.serial, "shell", "svc", "power", "stayon", "true", "&&", "am", "broadcast", "-a", "com.oculus.vrpowermanager.prox_close"], capture_output=True, text=True)   
         
         if proc.returncode:
             raise Exception("Failed to toggle Quest sleep.")
         
     def set_quest_guardian_enabled(self, enable):
         if enable:
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "setprop", "debug.oculus.guardian_pause", "0"])
+            proc = subprocess.run(["adb", "-s", self.serial, "shell", "setprop", "debug.oculus.guardian_pause", "0"], capture_output=True, text=True)
         else:
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "setprop", "debug.oculus.guardian_pause", "1"])
+            proc = subprocess.run(["adb", "-s", self.serial, "shell", "setprop", "debug.oculus.guardian_pause", "1"], capture_output=True, text=True)
         
         if proc.returncode:
             raise Exception("Failed to toggle Guardian.")
     
     def device_sleep(self, seconds):
-        proc = subprocess.run(["adb", "-s", self.serial, "shell", "sleep", str(seconds)])
+        proc = subprocess.run(["adb", "-s", self.serial, "shell", "sleep", str(seconds)], capture_output=True, text=True)
         if proc.returncode:
             raise Exception("Failed to sleep device.")
         
     def send_keycode_and_sleep(self, keycode, seconds):
-        proc = subprocess.run(["adb", "-s", self.serial, "shell", "input", "keyevent", str(keycode)])
+        proc = subprocess.run(["adb", "-s", self.serial, "shell", "input", "keyevent", str(keycode)], capture_output=True, text=True)
         if proc.returncode:
             raise Exception("Failed to send keycode.")
         
@@ -237,9 +238,9 @@ class Device:
 
     def set_package_enabled(self, package_name, enable):
         if enable:
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "pm", "disable-user", "--user 0", package_name])
+            proc = subprocess.run(["adb", "-s", self.serial, "shell", "pm", "disable-user", "--user 0", package_name], capture_output=True, text=True)
         else:
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "pm", "enable", "--user 0", package_name])
+            proc = subprocess.run(["adb", "-s", self.serial, "shell", "pm", "enable", "--user 0", package_name], capture_output=True, text=True)
         
         if proc.returncode:
             raise Exception(f"Failed to toggle {package_name} enablement.")
@@ -304,7 +305,7 @@ class Device:
             if type(step) == tuple:
                 self.send_keycode_and_sleep(*step)
             elif type(step) == str:
-                proc = subprocess.run(["adb", "-s", self.serial, "shell", step])
+                proc = subprocess.run(["adb", "-s", self.serial, "shell", step], capture_output=True, text=True)
                 if proc.returncode:
                     raise Exception(f"Failed to execute step: {step}")
             else:
@@ -349,14 +350,14 @@ class Device:
         self.hand_off_settings(config_pkg)
 
     def force_stop_and_sleep(self, package_name, seconds):
-        proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "force-stop", package_name])
+        proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "force-stop", package_name], capture_output=True, text=True)
         if proc.returncode:
             raise Exception(f"Failed to force stop {package_name} on device {self.serial}")
         
         self.device_sleep(seconds)
 
     def reboot(self):
-        proc = subprocess.run(["adb", "-s", self.serial, "reboot"])
+        proc = subprocess.run(["adb", "-s", self.serial, "reboot"], capture_output=True, text=True)
         if proc.returncode:
             raise Exception(f"Failed to reboot device {self.serial}")
 
@@ -400,7 +401,7 @@ class Device:
             return True
         if is_downgrade_error(proc.stdout + proc.stderr):
             if keep_newer_installed:
-                print(f"Device {self.serial} has a newer {label} than the package's. Keeping it.")
+                log(f"Device {self.serial} has a newer {label} than the package's. Keeping it.")
                 return False
             raise DeviceClientDowngradeException(f"Device {self.serial} has a newer {label} than {apk_path}. Remove the /client override or --force-upgrade.")
         raise DeviceInstallException(f"Failed to install {apk_path} on device {self.serial} - {proc.stderr}")
@@ -412,7 +413,7 @@ class Device:
         if is_client_admin(owner):
             # HMS headsets, and headsets provisioned before: our client already owns the device, and
             # `dpm set-device-owner` would fail.
-            print(f"Device {self.serial} is already owned by the ArborXR client.")
+            log(f"Device {self.serial} is already owned by the ArborXR client.")
             return
         if owner:
             raise DeviceSetDeviceOwnerException(f"Device {self.serial} is managed by {owner}. Factory reset it, then enroll it (through HMS on Meta Quest) before provisioning.")
@@ -528,9 +529,9 @@ class Device:
         raise exception_class(f"The client on {self.serial} didn't complete {command}. {last_error}")
 
     def wipe_client(self):
-        print(f"Wiping client data on device {self.serial}...")
+        log(f"Wiping client data on device {self.serial}...")
         self.run_client_command(WipeClient(), DeviceWipeClientException)
-        print("Client data wiped.")
+        log("Client data wiped.")
 
     def uninstall_apk(self, package_name):
         proc = subprocess.run(["adb", "-s", self.serial, "uninstall", package_name], capture_output=True, text=True)

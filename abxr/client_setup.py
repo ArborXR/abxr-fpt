@@ -8,6 +8,7 @@ This follows the Device Setup App step for step (device repo, SetupApp.Core/Devi
 SetupDevice and CleanUpDependencies), because that's what customers' headsets are set up with today.
 """
 
+from abxr.log import log
 from abxr.configuration_package import AbxrClientApk, AbxrLauncherApk
 from abxr.device import DeviceClientDowngradeException, DeviceInstallException
 from abxr.device_policy import is_newer_version
@@ -59,7 +60,7 @@ def prepare_client(device, client_apk, launcher_apk_path, operator_chose_client,
             try:
                 device.install_client_apk(launcher_apk_path, keep_newer_installed=True, label="ArborXR launcher")
             except Exception as e:
-                print(f"Couldn't put the launcher back on {device}: {e}")
+                log(f"Couldn't put the launcher back on {device}: {e}")
         raise
     if installed:
         _check_installed_version(device, client_apk)
@@ -96,11 +97,11 @@ def clean_up_after_failure(device, has_launcher):
         if device.abxr_client_version() is not None:
             device.wipe_client()
     except Exception as e:
-        print(f"Couldn't wipe the client on {device} after the failure: {e}")
+        log(f"Couldn't wipe the client on {device} after the failure: {e}")
 
     if has_launcher:
         try:
             if device.is_packaged_installed(AbxrLauncherApk.PACKAGE_NAME):
                 device.uninstall_apk(AbxrLauncherApk.PACKAGE_NAME)
         except Exception as e:
-            print(f"Couldn't remove the launcher on {device} after the failure: {e}")
+            log(f"Couldn't remove the launcher on {device} after the failure: {e}")

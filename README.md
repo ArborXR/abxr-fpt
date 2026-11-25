@@ -44,11 +44,15 @@ abxr-provision
 It runs as a station:
 - **Watching:** every 2 seconds it checks `adb devices`, on Windows, macOS and Linux.
 - **In parallel:** it provisions each headset that's plugged in, several at once.
-- **No repeats:** a headset that's done or failed isn't touched again until it's unplugged, so a station can keep running all day.
-- **Allow prompts:** a headset waiting on "Allow USB debugging" gets a prompt to tap it.
-- **Stopping:** press Ctrl+C. Any headset still running at that point isn't finished; re-run it.
+- **No repeats:** a headset that's done isn't touched again while it stays plugged in, or if it drops off for less than 2 minutes (a reboot, a loose cable). Unplug it for longer and plug it back in to run it again.
+- **Retrying:** a headset that failed is retried by unplugging it and plugging it back in.
+- **Waiting for the headset:** headsets adb can't use yet get a message saying what to do. That covers "Allow USB debugging" not tapped, "no permissions" (on Linux, add udev rules) and "offline".
+- **If adb doesn't answer** for a moment, the station waits for it. Headsets that are done stay done.
+- **Stopping:** press Ctrl+C to stop starting new headsets and wait for the running ones to finish. Press it again to quit at once; headsets that were still running aren't finished and need a re-run.
 
-Every log line starts with the headset's serial. On the FPD, the display shows a running summary: running, queued, done, failed, waiting for Allow.
+Every log line starts with the headset's serial. On the FPD, the display shows what's running, queued, done, failed and not ready, plus the last failure and its reason.
+
+Exit status: `--once` exits 0 when every headset it saw was provisioned, and 1 when any failed or was never ready. Ctrl+C exits 130.
 
 By default it looks for:
 - configuration packages in `$HOME/abxr/configuration-packages` (one per device model; two packages for the same model stop it from choosing).
@@ -65,11 +69,11 @@ abxr-provision --config-package <package.zip> --client <client.apk> --max-parall
 - `--config-package`, `-p`: use this package instead of searching the folder.
 - `--client`, `-c`: use this client APK instead of the package's. It can't be older than the client on the headset; a downgrade would need an uninstall, which loses an HMS headset's enrollment.
 - `--max-parallel`, `-n`: how many headsets to provision at once (default 8). On one USB 3 hub, 8 headsets share about 300 MB/s, so a powered USB 3 hub and good cables matter more than this number. A USB 2 hub caps everything at about 40 MB/s.
-- `--once`: provision the headsets connected now, then exit with status 0 if all succeeded. It waits up to 60 seconds for "Allow USB debugging" on a headset that asks for it.
+- `--once`: provision the headsets connected now, then exit. It waits up to 60 seconds for a headset that isn't ready (e.g. "Allow USB debugging" not tapped).
 - `--device-serial`, `-s`: provision only this headset. Implies `--once`.
 - `--force-upgrade`, `-f`: reinstall the client even when the versions match.
 - `--package-only`, `-o`: load the package onto a headset that's already set up, without touching the client.
-- `--list-connected-devices`, `-l`: list the headsets that are ready (authorized) and exit.
+- `--list-connected-devices`, `-l`: list the headsets that are ready (authorized) and exit. With `--device-serial`, only that one.
 
 ## Meta Quest with HMS: start to finish
 
@@ -152,7 +156,7 @@ A tool update. It's applied the next time the FPD boots into "Provision" mode, t
 
 ### Provision Mode
 
-With the selector switch in "Provision" mode, the FPD runs `abxr-provision` as a station. It provisions every headset plugged into it with the package that matches its model, several at once, and shows a running summary on its display. Each headset is provisioned once until it's unplugged.
+With the selector switch in "Provision" mode, the FPD runs `abxr-provision` as a station. It provisions every headset plugged into it with the package that matches its model, several at once. Its display shows running, queued, done, failed and not-ready counts, plus the last failure and its reason. A finished headset isn't provisioned again unless it's unplugged for more than 2 minutes.
 
 XR devices need USB power injection, because the FPD can't supply enough current. Use the included wall outlet and connector.
 

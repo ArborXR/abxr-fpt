@@ -103,20 +103,21 @@ def get_configuration_package_for_device(device, packages):
     return None
 
 
+# (exception, message for the log, short reason for the FPD display)
 FAILURE_MESSAGES = [
-    (DeviceWipeClientException, "Failed to wipe client"),
-    (DeviceUninstallException, "Failed to uninstall apk"),
-    (DeviceClientDowngradeException, "Headset client is newer. Remove the /client override or --force-upgrade."),
-    (DeviceInstallException, "Failed to install apk"),
-    (DeviceGrantPermissionException, "Failed to grant client permissions"),
-    (DeviceSetDeviceOwnerException, "Failed to set device owner"),
-    (DeviceConfigureException, "Failed to configure device"),
+    (DeviceWipeClientException, "Failed to wipe client", "Wipe failed"),
+    (DeviceUninstallException, "Failed to uninstall apk", "Uninstall failed"),
+    (DeviceClientDowngradeException, "Headset client is newer. Remove the /client override or --force-upgrade.", "Client is newer"),
+    (DeviceInstallException, "Failed to install apk", "Install failed"),
+    (DeviceGrantPermissionException, "Failed to grant client permissions", "Permission failed"),
+    (DeviceSetDeviceOwnerException, "Failed to set device owner", "Owner failed"),
+    (DeviceConfigureException, "Failed to configure device", "Configure failed"),
 ]
 
 
 def provision_device(device, package, args, log):
-    """Provision one headset with one package. Returns True on success. Each call runs on its own thread and opens
-    its own handle on the package zip, so several headsets can be provisioned at once."""
+    """Provision one headset with one package. Returns (ok, short failure reason). Each call runs on its own thread
+    and opens its own handle on the package zip, so several headsets can be provisioned at once."""
     package = ConfigurationPackage(package.path)
     timer = time.time()
 
@@ -167,12 +168,12 @@ def provision_device(device, package, args, log):
             complete_setup(device)
 
         log("Provisioned.")
-        return True
+        return True, None
 
     except Exception as e:
-        message = next((text for kind, text in FAILURE_MESSAGES if isinstance(e, kind)), "Unhandled error")
+        message, reason = next(((text, short) for kind, text, short in FAILURE_MESSAGES if isinstance(e, kind)), ("Unhandled error", "Error"))
         log(f"{message}: {e}")
-        return False
+        return False, reason
 
     finally:
         try:
@@ -199,31 +200,51 @@ def provision(args):
             exit(1)
 
     def run(serial, log):
-        device = Device(serial)
+        # Right after a headset appears, getprop can still come back empty. Give it a few seconds before failing.
+        for _ in range(5):
+            device = Device(serial)
+            if device.model_name:
+                break
+            time.sleep(1)
+        else:
+            log("adb didn't report the headset's model. Replug it.")
+            return False, "No model"
+
         package = get_configuration_package_for_device(device, packages)
         if package is None:
             log(f"No configuration package for device model {device.model_name}.")
-            return False
+            return False, "No package"
         log(f"Using configuration package {package.path.name}")
         return provision_device(device, package, args, log)
 
     station = Station(run, max_parallel=args.max_parallel, only_serial=args.device_serial)
     print(f"Provisioning up to {args.max_parallel} headsets at a time. " + ("Press Ctrl+C to stop." if not args.once else ""))
 
+    adb_failing = False
     try:
         while True:
-            station.update(list_adb_devices())
-            summary = station.summary()
-            display.write(["ArborXR provisioning", summary])
+            devices = list_adb_devices()
+            if devices is None and not adb_failing:
+                print("adb didn't answer. Retrying; headsets that are done stay done.")
+            adb_failing = devices is None
+            station.update(devices)
+            display.write(station.display_lines())
             if args.once and station.is_idle():
-                print(summary)
-                exit(0 if station.failed_count() == 0 else 1)
+                print(station.summary())
+                exit(0 if station.all_succeeded() else 1)
             time.sleep(POLL_SECONDS)
     except KeyboardInterrupt:
+        station.stop()
         running = station.running_count()
         if running:
-            print(f"Stopping with {running} headset(s) still running. Re-run them; they aren't finished.")
+            print(f"Stopping: waiting for {running} running headset(s) to finish. Press Ctrl+C again to quit now.")
+            try:
+                while station.running_count():
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                print("Quitting now. Headsets that were still running aren't finished, and sleep and Guardian may still be off on them: re-run them.")
         print(station.summary())
+        exit(130)
 
 
 def main():
@@ -249,8 +270,12 @@ def main():
         exit(1)
 
     if args.list_connected_devices:
-        for serial, state in list_adb_devices():
-            if state == "device":
+        devices = list_adb_devices()
+        if devices is None:
+            print("adb didn't answer.")
+            exit(1)
+        for serial, state in devices:
+            if state == "device" and (not args.device_serial or serial == args.device_serial):
                 print(serial)
         exit(0)
 

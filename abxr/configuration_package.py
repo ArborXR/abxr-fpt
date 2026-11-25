@@ -10,6 +10,8 @@ import uuid
 from pathlib import Path
 import zipfile
 
+from abxr.log import log
+
 
 class AbxrClientApk:
     PACKAGE_NAME = "app.xrdm.client"
@@ -104,7 +106,6 @@ class ConfigurationPackage:
             self.version = self.settings.get("version", None)
             if self.version == "2.0.0":
                 self.is_xrdm2 = True
-                print("Found a v2 config package")
         except Exception as e:
             raise Exception(f"Error parsing settings.json: {e}")
         
@@ -215,7 +216,7 @@ class ConfigurationPackage:
         try:
             return self.settings["createdAt"]
         except Exception as e:
-            print("Error getting created at: {e}")
+            log(f"Error getting created at: {e}")
             return None
 
     def device_group(self):
@@ -225,14 +226,14 @@ class ConfigurationPackage:
             else:
                 return self.settings["deviceGroup"]
         except Exception as e:
-            print("Error getting device group: {e}")
+            log(f"Error getting device group: {e}")
             return None
 
     def model_name(self):
         try:
             return self.settings["deviceModel"]["name"]
         except Exception as e:
-            print("Error getting device model name: {e}")
+            log(f"Error getting device model name: {e}")
             return None
         
     def model_names(self):
@@ -242,7 +243,7 @@ class ConfigurationPackage:
             else:
                 return self.settings["deviceModel"]["modelNames"]
         except Exception as e:
-            print("Error getting device model names: {e}")
+            log(f"Error getting device model names: {e}")
             return None
         
     def extract_item(self, item, output_path):
