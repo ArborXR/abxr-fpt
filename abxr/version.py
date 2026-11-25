@@ -3,5 +3,11 @@
 # Released under the MIT License. See LICENSE file for details.
 #
 
-import pkg_resources
-version = pkg_resources.require("abxrfpt")[0].version
+# importlib.metadata, not pkg_resources: setuptools 81 and later no longer ship pkg_resources, so a fresh install
+# couldn't start.
+from importlib.metadata import PackageNotFoundError, version as _installed_version
+
+try:
+    version = _installed_version("abxrfpt")
+except PackageNotFoundError:
+    version = "unknown"
