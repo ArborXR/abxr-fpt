@@ -72,7 +72,10 @@ class DevicePolicyTest(unittest.TestCase):
         self.assertTrue(is_older_firmware("1.97.1234.01", "1.98.8888.01"))
         self.assertFalse(is_older_firmware("1.98.8888.01", "1.98.8888.01"))
         self.assertFalse(is_older_firmware("2.03.623.01", "1.98.8888.01"))
-        self.assertFalse(is_older_firmware("unknown", "1.98.8888.01"))
+        # Like NuGetVersion in the Device Setup App: unreadable counts as 0, a pre-release is older.
+        self.assertTrue(is_older_firmware("unknown", "1.98.8888.01"))
+        self.assertTrue(is_older_firmware("", "1.98.8888.01"))
+        self.assertTrue(is_older_firmware("1.98.8888.01-beta", "1.98.8888.01"))
 
     def test_recognises_a_client_downgrade(self):
         self.assertTrue(is_downgrade_error("adb: failed to install c.apk: Failure [INSTALL_FAILED_VERSION_DOWNGRADE: Downgrade detected]"))

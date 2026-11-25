@@ -40,7 +40,7 @@ hotplug = False
 def complete_setup(device):
     """The Device Setup App's CompleteSetup: sleep and Guardian come back on in the `finally` below; a VIVE Flow on
     firmware older than 1.98.8888.01 reboots, so the Holoride app doesn't auto-launch after setup."""
-    if device.is_vive_flow() and is_older_firmware(device.firmware_version, "1.98.8888.01"):
+    if device.is_vive_flow() and is_older_firmware(device.vive_flow_firmware_version(), "1.98.8888.01"):
         device.reboot()
 
 

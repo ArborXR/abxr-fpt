@@ -8,7 +8,7 @@ This follows the Device Setup App step for step (device repo, SetupApp.Core/Devi
 SetupDevice and CleanUpDependencies), because that's what customers' headsets are set up with today.
 """
 
-from abxr.configuration_package import AbxrLauncherApk
+from abxr.configuration_package import AbxrClientApk, AbxrLauncherApk
 from abxr.device import DeviceClientDowngradeException, DeviceInstallException
 from abxr.device_policy import is_newer_version
 
@@ -31,7 +31,8 @@ def prepare_client(device, client_apk, launcher_apk_path, operator_chose_client,
     client, wipe it so it enrolls into the package's group. Returns whether the client was installed."""
     progress = progress or SetupProgress()
     installed_version = device.abxr_client_version()
-    is_reinstall = installed_version is not None
+    # Like the Device Setup App's IsInstalled: from package presence, not from whether a version could be read.
+    is_reinstall = device.is_packaged_installed(AbxrClientApk.PACKAGE_NAME)
 
     # A client the operator chose must install, and a downgrade needs an uninstall, which this tool never does: on
     # HMS headsets the client keeps HMS's provisioning record through a wipe (client CL-1355), not an uninstall.
@@ -52,9 +53,13 @@ def prepare_client(device, client_apk, launcher_apk_path, operator_chose_client,
     try:
         installed = device.install_client_apk(client_apk.path, keep_newer_installed=not operator_chose_client)
     except DeviceClientDowngradeException:
-        # adb refused a client the operator chose (versions the pre-check couldn't compare). Put the launcher back.
+        # adb refused a client the operator chose (versions the pre-check couldn't compare). Put the launcher back,
+        # and keep reporting the refusal even if that fails: the client itself wasn't changed.
         if launcher_removed:
-            device.install_client_apk(launcher_apk_path, keep_newer_installed=True, label="ArborXR launcher")
+            try:
+                device.install_client_apk(launcher_apk_path, keep_newer_installed=True, label="ArborXR launcher")
+            except Exception as e:
+                print(f"Couldn't put the launcher back on {device}: {e}")
         raise
     if installed:
         _check_installed_version(device, client_apk)

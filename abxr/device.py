@@ -95,22 +95,22 @@ class Device:
         self._load_abi()
 
     def is_quest(self):
-        return "Quest" in self.model_name
+        return "quest" in self.model_name.lower()
     
     def is_vive_flow(self):
-        return "VIVE Flow" in self.model_name
+        return "vive flow" in self.model_name.lower()
     
     def is_pico(self):
-        return "Pico" in self.model_name
+        return "pico" in self.model_name.lower()
     
     def is_vive_xr_elite(self):
-        return "VIVE XR Series" in self.model_name
+        return "vive xr series" in self.model_name.lower()
     
     def is_vive_focus_3(self):
-        return "Focus 3" in self.model_name
+        return "focus 3" in self.model_name.lower()
     
     def is_magic_leap_2(self):
-        return "Magic Leap 2" in self.model_name
+        return "magic leap 2" in self.model_name.lower()
     
     def prop(self, prop_name):
         result = subprocess.run(["adb", "-s", self.serial, "shell", "getprop", prop_name], capture_output=True, text=True)
@@ -458,16 +458,22 @@ class Device:
         """Follow the client's log for a command until it reports DONE, like the Device Setup App."""
         proc = subprocess.Popen(
             ["adb", "-s", self.serial, "logcat", "-v", "tag", "-b", "main", f"{command_id}:I", "*:S"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding="utf-8", errors="replace",
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace",
         )
         lines = queue.Queue()
 
-        def read():
+        def read_stdout():
             for line in proc.stdout:
                 lines.put(line)
             lines.put(None)
 
-        threading.Thread(target=read, daemon=True).start()
+        def read_stderr():
+            for line in proc.stderr:
+                if line.strip():
+                    lines.put(("stderr", line.strip()))
+
+        threading.Thread(target=read_stdout, daemon=True).start()
+        threading.Thread(target=read_stderr, daemon=True).start()
         deadline = time.time() + timeout_seconds
         try:
             while time.time() < deadline:
@@ -478,6 +484,8 @@ class Device:
                 if line is None:
                     # Like the Device Setup App: logcat ending (e.g. the headset was unplugged) is a failure now.
                     raise Exception(f"logcat stopped before command {command_id} finished.")
+                if isinstance(line, tuple):
+                    raise Exception(f"logcat: {line[1]}")
                 message = parse_command_progress(line, command_id)
                 if message is None:
                     continue
@@ -500,7 +508,10 @@ class Device:
         for attempt in range(4):
             if attempt:
                 time.sleep(1)
-                self.start_client_app()
+                try:
+                    self.start_client_app()
+                except DeviceConfigureException as e:
+                    raise exception_class(f"The client on {self.serial} didn't complete {command}: {e}")
             try:
                 self._start_adb_service()
                 proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "activity", "service", CLIENT_ADB_SERVICE, f"'''{command_json}'''"], capture_output=True, text=True)
@@ -541,7 +552,15 @@ class Device:
         return self.get_installed_version(AbxrClientApk.PACKAGE_NAME)
     
     def is_packaged_installed(self, package_name):
-        return self.get_installed_version(package_name) is not None
+        """Whether a package is installed, from `pm list packages` like the Device Setup App's IsInstalled. Raises
+        when adb can't answer, rather than reporting "not installed"."""
+        proc = subprocess.run(["adb", "-s", self.serial, "shell", "pm", "list", "packages", package_name], capture_output=True, text=True)
+        if proc.returncode:
+            raise Exception(f"Couldn't list packages on {self.serial}. {proc.stderr}")
+        return f"package:{package_name}" in proc.stdout.split()
+
+    def vive_flow_firmware_version(self):
+        return self.prop("ro.product.version")
     
     def __str__(self):
         return self.serial

@@ -91,16 +91,21 @@ def is_newer_version(installed_version, target_version):
 
 
 def is_older_firmware(firmware_version, threshold):
-    """Whether a dotted firmware version (e.g. "1.97.1234.01") is older than the threshold. False when it can't be
-    read, so a check that needs it is skipped."""
+    """Whether a dotted firmware version (e.g. "1.97.1234.01") is older than the threshold, compared like the
+    Device Setup App's NuGetVersion: an unreadable version counts as 0 (older), and a pre-release suffix
+    ("1.98.8888.01-beta") is older than the same release."""
     def parse(version):
+        base, _, prerelease = str(version or "").partition("-")
         try:
-            return tuple(int(part) for part in str(version).split("."))
+            return tuple(int(part) for part in base.split(".")), bool(prerelease)
         except ValueError:
-            return None
+            return (0,), False
 
-    firmware, minimum = parse(firmware_version), parse(threshold)
-    return firmware is not None and minimum is not None and firmware < minimum
+    (firmware, firmware_prerelease), (minimum, _) = parse(firmware_version), parse(threshold)
+    length = max(len(firmware), len(minimum))
+    firmware += (0,) * (length - len(firmware))
+    minimum += (0,) * (length - len(minimum))
+    return firmware < minimum or (firmware == minimum and firmware_prerelease)
 
 
 def is_downgrade_error(adb_install_output):

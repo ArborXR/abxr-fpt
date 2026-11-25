@@ -28,6 +28,8 @@ class FakeDevice:
         return self.version
 
     def is_packaged_installed(self, package_name):
+        if package_name == "app.xrdm.client":
+            return self.version is not None
         return package_name == LAUNCHER and self.launcher_installed
 
     def install_client_apk(self, path, keep_newer_installed, label="ArborXR client"):
@@ -133,6 +135,17 @@ class PrepareClientTest(unittest.TestCase):
             [("uninstall", LAUNCHER), ("install", "app.xrdm.client-2026.47.1", False), ("install", LAUNCHER_APK, True)],
             device.calls,
         )
+
+    def test_refused_chosen_client_is_still_reported_if_the_launcher_cant_come_back(self):
+        class LauncherFails(FakeDevice):
+            def install_client_apk(self, path, keep_newer_installed, label="ArborXR client"):
+                if "launcher" in path:
+                    raise Exception("no space")
+                return super().install_client_apk(path, keep_newer_installed, label)
+
+        device = LauncherFails("2026.48.0-rc.1", launcher_installed=True, install_result=DeviceClientDowngradeException("newer"))
+        with self.assertRaises(DeviceClientDowngradeException):
+            prepare(device, "2026.47.1", launcher=LAUNCHER_APK, chose=True)
 
     def test_no_cleanup_when_the_launcher_cleanup_itself_fails(self):
         progress = SetupProgress()
