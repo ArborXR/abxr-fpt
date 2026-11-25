@@ -1,6 +1,6 @@
 import unittest
 
-from abxr.device_policy import ALREADY_CURRENT, INSTALL, KEEP_INSTALLED, ClientDowngradeRefused, client_install_decision, compare_versions, is_client_admin, is_downgrade_error, parse_device_owner, parse_is_hms
+from abxr.device_policy import ALREADY_CURRENT, INSTALL, KEEP_INSTALLED, client_install_decision, compare_versions, is_client_admin, is_downgrade_error, parse_device_owner, parse_is_hms
 
 DUMPSYS_OWNED_BY_CLIENT = """Current Device Policy Manager state:
   Immutable state:
@@ -45,29 +45,37 @@ class DevicePolicyTest(unittest.TestCase):
         self.assertIsNone(parse_is_hms(""))
         self.assertIsNone(parse_is_hms("No result found."))
 
-    def test_compares_client_versions(self):
+    def test_compares_release_versions_only(self):
         self.assertEqual(1, compare_versions("2026.48.0", "2026.45.1"))
         self.assertEqual(0, compare_versions("2026.47.0", "2026.47.0"))
         self.assertEqual(-1, compare_versions("2026.9.0", "2026.10.0"))
         self.assertIsNone(compare_versions(None, "2026.47.0"))
-        self.assertIsNone(compare_versions("2026.47.0", "unknown"))
+        self.assertIsNone(compare_versions("2026.47.0-dev", "2026.47.0"))
+        self.assertIsNone(compare_versions("2026.47.0.1234", "2026.47.0"))
 
-    def test_decides_the_client_install_before_any_wipe(self):
-        def decide(installed, target, chose=False, force=False, v2=True):
-            return client_install_decision(installed, target, operator_chose_client=chose, force_upgrade=force, is_v2_package=v2)
+    def test_decides_the_client_install_for_v2_packages(self):
+        def decide(installed, target, chose=False, force=False):
+            return client_install_decision(installed, target, operator_chose_client=chose, force_upgrade=force, is_v2_package=True)
 
         self.assertEqual(INSTALL, decide(None, "2026.47.0"))
         self.assertEqual(INSTALL, decide("2026.45.0", "2026.47.0"))
         self.assertEqual(ALREADY_CURRENT, decide("2026.47.0", "2026.47.0"))
-        self.assertEqual(INSTALL, decide("2026.47.0", "2026.47.0", chose=True, force=True))
         # HMS installs whatever client is current, which can be newer than the package's.
         self.assertEqual(KEEP_INSTALLED, decide("2026.48.0", "2026.47.0"))
-        # An older client the operator chose: refused for v2 (no uninstall), allowed for v1 (uninstall, reinstall).
-        with self.assertRaises(ClientDowngradeRefused):
-            decide("2026.48.0", "2026.40.0", chose=True)
-        self.assertEqual(INSTALL, decide("2026.48.0", "2026.40.0", chose=True, v2=False))
+        # The operator's choice is always attempted; a refused downgrade fails before any wipe.
+        self.assertEqual(INSTALL, decide("2026.48.0", "2026.40.0", chose=True))
+        self.assertEqual(INSTALL, decide("2026.47.0", "2026.47.0", chose=True, force=True))
+        # Versions that can't be compared are an install attempt, not a guess.
+        self.assertEqual(INSTALL, decide("2026.47.0-dev", "2026.47.0"))
         self.assertEqual(INSTALL, decide("2026.48.0", None))
-        self.assertEqual(ALREADY_CURRENT, decide("custom", "custom"))
+
+    def test_keeps_the_original_rule_for_xrdm1_packages(self):
+        def decide(installed, target, force=False):
+            return client_install_decision(installed, target, operator_chose_client=False, force_upgrade=force, is_v2_package=False)
+
+        self.assertEqual(INSTALL, decide("2026.48.0", "2025.10.0"))
+        self.assertEqual(ALREADY_CURRENT, decide("2025.10.0", "2025.10.0"))
+        self.assertEqual(INSTALL, decide("2025.10.0", "2025.10.0", force=True))
 
     def test_recognises_a_client_downgrade(self):
         self.assertTrue(is_downgrade_error("adb: failed to install c.apk: Failure [INSTALL_FAILED_VERSION_DOWNGRADE: Downgrade detected]"))

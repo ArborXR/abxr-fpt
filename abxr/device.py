@@ -42,6 +42,9 @@ class DeviceConfigureApiTokenException(Exception):
 class DeviceConfigurationObjectException(Exception):
     pass
 
+class DeviceClientDowngradeException(DeviceInstallException):
+    pass
+
 class DeviceGrantPermissionException(Exception):
     pass
 
@@ -169,7 +172,8 @@ class Device:
 
         with tempfile.TemporaryDirectory() as extract_path:
             try:
-                zipfile.ZipFile(bundle_path, 'r').extractall(extract_path)
+                with zipfile.ZipFile(bundle_path, 'r') as bundle:
+                    bundle.extractall(extract_path)
                 package_name = fallback_package_name
                 for file in Path(extract_path).rglob("*.apk"):
                     if not file.name.startswith("."):
@@ -183,7 +187,9 @@ class Device:
                         self.push_file(file, f"/sdcard/Android/obb/{package_name}/{file.name}")        
             
             except NotImplementedError:
-                print(f"Skipping invalid zip package format. {fallback_package_name or bundle_path}")            
+                print(f"Skipping invalid zip package format. {fallback_package_name or bundle_path}")
+            except zipfile.BadZipFile as e:
+                raise DeviceInstallException(f"App bundle {fallback_package_name or bundle_path} isn't a valid zip: {e}")            
         
     
     def install_apk(self, package_name):
@@ -415,9 +421,11 @@ class Device:
         proc = subprocess.run(["adb", "-s", self.serial, "install", "-r", "-t", "-g", client_apk_path], capture_output=True, text=True)
         if not proc.returncode:
             return True
-        if keep_newer_installed and is_downgrade_error(proc.stdout + proc.stderr):
-            print(f"Device {self.serial} has a newer ArborXR client than the package. Keeping it.")
-            return False
+        if is_downgrade_error(proc.stdout + proc.stderr):
+            if keep_newer_installed:
+                print(f"Device {self.serial} has a newer ArborXR client than the package. Keeping it.")
+                return False
+            raise DeviceClientDowngradeException(f"Device {self.serial} has a newer ArborXR client than {client_apk_path}. Remove the /client override or --force-upgrade.")
         raise DeviceInstallException(f"Failed to install {client_apk_path} on device {self.serial} - {proc.stderr}")
 
     def set_device_owner(self):

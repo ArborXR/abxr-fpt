@@ -46,18 +46,19 @@ def parse_is_hms(oemconfig_query_output, oemconfig_query_error=""):
     return not ("-1" in oemconfig_query_output or "not found" in oemconfig_query_output)
 
 
-def compare_versions(installed_version, target_version):
-    """-1, 0 or 1 as the installed client version is older than, equal to or newer than the target, or None
-    when either can't be read (e.g. "2026.47.0" versus "2026.45.1")."""
-    def parse(version):
-        try:
-            return tuple(int(part) for part in str(version).split("-")[0].split("."))
-        except (TypeError, ValueError):
-            return None
+_RELEASE_VERSION = re.compile(r"^\d{4}\.\d+\.\d+$")
 
-    installed, target = parse(installed_version), parse(target_version)
-    if installed is None or target is None:
+
+def compare_versions(installed_version, target_version):
+    """-1, 0 or 1 as the installed client is older than, equal to or newer than the target. None unless both are
+    plain release versions (YYYY.W.N, as in the client's release tags), e.g. "2026.47.0-dev" can't be compared."""
+    if not (installed_version and target_version):
         return None
+    if not (_RELEASE_VERSION.match(installed_version) and _RELEASE_VERSION.match(target_version)):
+        return None
+
+    installed = tuple(int(part) for part in installed_version.split("."))
+    target = tuple(int(part) for part in target_version.split("."))
     return (installed > target) - (installed < target)
 
 
@@ -66,34 +67,27 @@ KEEP_INSTALLED = "keep-installed"
 ALREADY_CURRENT = "already-current"
 
 
-class ClientDowngradeRefused(Exception):
-    pass
-
-
 def client_install_decision(installed_version, target_version, operator_chose_client, force_upgrade, is_v2_package):
-    """What to do with the client before loading a package, decided before anything is wiped.
+    """Whether to install the target client: INSTALL, KEEP_INSTALLED or ALREADY_CURRENT.
 
-    INSTALL, KEEP_INSTALLED (the headset has a newer client than the package's own, which the Device Setup App also
-    keeps) or ALREADY_CURRENT. Raises ClientDowngradeRefused when the operator chose an older client (a /client
-    override or --force-upgrade) for a v2 package: that needs an uninstall, which this tool never does for v2
-    packages because it would lose an HMS headset's provisioning record.
+    XRDM 1 packages keep this tool's original rule: install whenever the versions differ (after an uninstall).
+    v2 packages keep a newer installed client, as the Device Setup App does, unless the operator chose a client
+    (a /client override or --force-upgrade). Anything uncertain is an INSTALL attempt: for v2 packages the client
+    is installed before it's wiped, so a failed attempt leaves the headset as it was.
     """
     if installed_version is None:
         return INSTALL
 
-    comparison = compare_versions(installed_version, target_version)
-
-    if comparison is None:
+    if not is_v2_package:
         return INSTALL if installed_version != target_version or force_upgrade else ALREADY_CURRENT
-    if comparison > 0:
-        if not operator_chose_client:
-            return KEEP_INSTALLED
-        if is_v2_package:
-            raise ClientDowngradeRefused(f"The headset has client {installed_version}, newer than {target_version}. Can't downgrade it with a v2 package.")
+
+    if operator_chose_client:
         return INSTALL
-    if comparison < 0 or force_upgrade:
-        return INSTALL
-    return ALREADY_CURRENT
+    if (compare_versions(installed_version, target_version) or 0) > 0:
+        return KEEP_INSTALLED
+    if installed_version == target_version:
+        return ALREADY_CURRENT
+    return INSTALL
 
 
 def is_downgrade_error(adb_install_output):

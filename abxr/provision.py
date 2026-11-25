@@ -24,8 +24,9 @@ from abxr.device import Device, \
                         DeviceRemoveDeviceOwnerException, \
                         DeviceConfigureApiTokenException, \
                         DeviceGrantPermissionException, \
+                        DeviceClientDowngradeException, \
                         DeviceWipeClientException
-from abxr.device_policy import ALREADY_CURRENT, INSTALL, KEEP_INSTALLED, ClientDowngradeRefused, client_install_decision
+from abxr.client_setup import prepare_client
 from abxr.display import display
 from abxr.version import version
 
@@ -192,53 +193,13 @@ def provision(args):
                         elif is_hms is None:
                             print(f"Couldn't tell whether device {device} is enrolled through HMS.")
 
-                        # Decide the client install before wiping anything, so a run can't stop with the client
-                        # wiped and the package not loaded.
-                        installed_version = device.abxr_client_version()
-                        try:
-                            decision = client_install_decision(
-                                installed_version,
-                                client_apk.version,
-                                operator_chose_client=operator_chose_client,
-                                force_upgrade=args.force_upgrade,
-                                is_v2_package=package.is_xrdm2,
-                            )
-                        except ClientDowngradeRefused as e:
-                            raise DeviceInstallException(f"Device {device}: {e}")
-                        needs_client_install = decision == INSTALL
-
-                        if decision == KEEP_INSTALLED:
-                            print(f"Device {device} has client {installed_version}, newer than the package's {client_apk.version}. Keeping it.")
-
-                        if installed_version is not None:
-                            if package.is_xrdm2:
-                                # Like the Device Setup App: always wipe an installed client's data before loading
-                                # a package, so it enrolls into the package's group. Never uninstall it: on HMS
-                                # headsets the client keeps the HMS provisioning record through a wipe (client
-                                # CL-1355), but not through an uninstall.
-                                device.wipe_client()
-                            elif needs_client_install:
-                                device.remove_device_owner()
-                                device.uninstall_apk(AbxrClientApk.PACKAGE_NAME)
-
-                        if needs_client_install:
-                            installed = device.install_client_apk(
-                                client_apk.path,
-                                keep_newer_installed=not operator_chose_client,
-                            )
-
-                            if installed and device.abxr_client_version() != client_apk.version:
-                                print(f"Failed to install ArborXR Client APK on {device}")
-                                display.write("Failed to install ArborXR Client APK", wait=5)
-                                continue
-                        elif decision == ALREADY_CURRENT:
-                            print(f"Device {device} already has the expected ArborXR Client APK version {client_apk.version}")
-
-                        # A no-op when our client already owns the device, which is always true on HMS headsets.
-                        device.set_device_owner()
-
-                        if needs_client_install:
-                            device.set_production_environment()
+                        prepare_client(
+                            device,
+                            package,
+                            client_apk,
+                            operator_chose_client=operator_chose_client,
+                            force_upgrade=args.force_upgrade,
+                        )
 
                     if package.launcher_apk:
                         if device.is_packaged_installed(AbxrLauncherApk.PACKAGE_NAME):
@@ -264,6 +225,9 @@ def provision(args):
                 print(f"Failed to uninstall apk: {e}")
                 display.write("Failed to uninstall apk", wait=5)
 
+            except DeviceClientDowngradeException as e:
+                print(f"Client downgrade refused: {e}")
+                display.write(["Headset client is newer.", "Remove /client override", "or --force-upgrade."], wait=5)
             except DeviceInstallException as e:
                 print(f"Failed to install apk: {e}")
                 display.write("Failed to install apk", wait=5)

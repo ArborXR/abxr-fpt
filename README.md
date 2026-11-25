@@ -103,7 +103,7 @@ All of the command line switches are optional, and can be used interchangably. T
 - **It detects HMS** through Meta's OEMConfig provider (`content://com.oculus.oemconfig.provider/managed`).
 - **It leaves device ownership alone.** HMS made the ArborXR client the device owner, so `dpm set-device-owner` is skipped. If another MDM owns the headset, it stops and asks you to factory reset it.
 - **It re-provisions with `WipeClient`, never with an uninstall.** The client keeps HMS's provisioning record through a wipe, but not through an uninstall or a device-owner removal, and the tool refuses to do either on an HMS headset.
-- **It keeps a newer client.** If the headset's client is newer than the package's, it's kept, like in the Device Setup App. Downgrading with a `/client` override or `--force-upgrade` only works with XRDM 1 packages, which uninstall the client first. With a v2 package the tool refuses before touching the headset.
+- **It installs the client before it wipes it.** A failed install leaves the headset as it was. If the headset's client is newer than the package's, it's kept, like in the Device Setup App. Downgrading with a `/client` override or `--force-upgrade` only works with XRDM 1 packages, which uninstall the client first. With a v2 package, the refused downgrade stops the run before anything is wiped.
 - **The headset ends up in the package's group.** It's enrolled from the package's `settings.json`, and content already pushed over USB isn't downloaded again.
 
 The headset needs USB debugging on (turn on Developer mode in the ArborXR group it enrolled into) and "Allow USB debugging" accepted on the headset.
