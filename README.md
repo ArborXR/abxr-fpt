@@ -1,97 +1,60 @@
 # ArborXR Field Provisioning Tools
 
-This project is a collection of tools to help provision and recover Android devices on ArborXR's XRDM. The provisioning tools can be used interactively on a computer, or deployed onto the ArborXR Field Provisioning Device (FPD). The tools are intended to be used without the need for network connectivity to the ArborXR XRDM backend.
+`abxr-provision` loads an ArborXR configuration package onto Android headsets over USB, from the command line. It does what the ArborXR Device Setup App does, step for step, and can run several headsets at once as an unattended station. It runs on a Windows, macOS or Linux computer, or on the ArborXR Field Provisioning Device (FPD). Everything goes over USB. The computer doesn't need to reach ArborXR.
 
 ### Features
-- Provision new Android devices (XR, Phone, Tablet) with an XRDM configuration package.
-- Re-provision existing devices with a configuration package.
+- Provision new Android devices (XR, phone, tablet) with a configuration package built in the ArborXR portal.
+- Re-provision devices that already have the ArborXR client, including Meta Quest headsets enrolled through Meta Horizon managed services (HMS).
+- Provision several headsets at once in one process, as a station that keeps running.
 - Replace the ArborXR client with a newer build, or reinstall the same one.
 
-Only v2 configuration packages (built in the ArborXR portal) are supported. XRDM 1 packages are rejected.
-
+Only v2 configuration packages are supported. XRDM 1 packages are rejected; build a new package in the ArborXR portal.
 
 ## Table of Contents
-- [Features](#features)
-- [Field Provisioning Device (FPD)](#field-provisioning-device-fpd)
-  - [Hardware Information](#hardware-information)
-  - [Setup Mode](#setup-mode)
-  - [Provision Mode](#provision-mode)
-- [Development Environment Setup](#development-environment-setup)
+- [Requirements](#requirements)
+- [Installing](#installing)
 - [Running the Provisioning Tool](#running-the-provisioning-tool)
+- [Meta Quest with HMS: start to finish](#meta-quest-with-hms-start-to-finish)
+- [How a headset is provisioned](#how-a-headset-is-provisioned)
+- [Limits](#limits)
+- [Field Provisioning Device (FPD)](#field-provisioning-device-fpd)
+- [Development](#development)
 
-## Field Provisioning Device (FPD)
+## Requirements
 
-The ArborXR Field Provisioning Device is a headless computer which can deploy XRDM Configuration Packages without the need for internet access. 
+- **Python 3.9 or later.**
+- **adb on the PATH** (Android SDK Platform-Tools). The tool runs one adb server for every headset, like the Device Setup App. Avoid running the Device Setup App, or another tool that ships its own adb, at the same time: two adb versions can stop each other's server.
+- **USB debugging on each headset.** For headsets enrolled in ArborXR, turn on Developer mode in the group they enrolled into, and accept "Allow USB debugging" (with "Always allow from this computer") on the headset.
+- **Disk space** for the package plus its largest single file (see [Limits](#limits)).
 
-### Hardware Information
-
-Currently supported hardware is currently a Raspberry Pi Zero 2 W running RBPI OS 64-bit. There are custom modifications made to the base image to support the dual mode USB (host/gadget). The image customizations are currenly not well documented, and in the future should be captured in code to be able to apply to a fresh RBPI OS image. 
-
-`device_start.sh` - This is a specific script which is launched by `systemd` to automatically start the provisioning tool on the FPD. There is a check to see if a certain GPIO is set to check for "Setup" or "Provision" mode is set.
-
-### Setup Mode
-
-When the FPD selector switch is in "Setup" Mode, the device can be connected to any computer and will show up as a "Mass Storage Device". This is where the user can place XRDM Configuration Packages and/or an alternate client build. 
-
-You must follow a specific directory structure:
-```
-/configuration-packages
-```
-Place XRDM configuration packages here. Currently undetermined behavior if you place multiple configuration packages which apply to the same device. We don't have logic which can select the "best" package. Make sure you only place one per device type
-```
-/client
-```
-(Optional) You can place an alternate client to use instead of what's included in the configuration package, for example a newer build. It can't be older than the client on the headset: a downgrade would need an uninstall, which loses an HMS headset's enrollment.
-```
-field-provisioning-tools-update.zip
-```
-This is the update package. It will be read as soon as the device boots into "Provision" mode. It will automatically be deleted as soon as its applied.
-
-### Provision Mode
-
-When the FPD selector switch is in "Provision" Mode, the device can be connected to any Android device which USB debugging is enabled, and it will automatically start provisioning the device with any available configuration package that matches the device model connected.
-
-This all happens in a headless manner, but once the device is provisioned the FPD will stop, and wont start another provisioning run until a new device is detected.
-
-Currently XR devices require USB power injection due to the FPD HW not being able to supply enough current. Please use the included wall outlet and connector.
-
-## Development Environment Setup
-
-Python 3.x is required. 
-
-1. Clone the repository:
-
-2. Create and activate a virtual environment:
-    ```sh
-    python3 -m venv venv
-    source venv/bin/activate  # On Windows use `venv\Scripts\activate`
-    ```
-
-3. Install the dependencies:
-    ```sh
-    pip install -r requirements.txt
-    ```
-
-## Running the Provisioning Tool
-
-To run the provisioning tool, use the following command to install it into the path:
+## Installing
 
 ```sh
-install.sh
+pip install -e .
 ```
 
-Then it can be run using
+(`install.sh` does the same.) This puts `abxr-provision` on the PATH.
+
+## Running the Provisioning Tool
 
 ```sh
 abxr-provision
 ```
-It runs as a station: it watches `adb devices` (every 2 seconds, on Windows, macOS and Linux) and provisions each headset that's plugged in, several at once. A headset that's done or failed isn't touched again until it's unplugged, so a station can keep running all day. Press Ctrl+C to stop. A headset still waiting on "Allow USB debugging" gets a prompt to tap it.
 
-Default options:
-- Searches for configuration packages in $HOME/abxr/configuration-packages
-- Searches for any special client APK overrides in $HOME/abxr/client
+It runs as a station:
+- **Watching:** every 2 seconds it checks `adb devices`, on Windows, macOS and Linux.
+- **In parallel:** it provisions each headset that's plugged in, several at once.
+- **No repeats:** a headset that's done or failed isn't touched again until it's unplugged, so a station can keep running all day.
+- **Allow prompts:** a headset waiting on "Allow USB debugging" gets a prompt to tap it.
+- **Stopping:** press Ctrl+C. Any headset still running at that point isn't finished; re-run it.
 
-You can override the base path by setting the `ABXR_ASSETS_PATH` environment variable before starting the provisioning tool.
+Every log line starts with the headset's serial. On the FPD, the display shows a running summary: running, queued, done, failed, waiting for Allow.
+
+By default it looks for:
+- configuration packages in `$HOME/abxr/configuration-packages` (one per device model; two packages for the same model stop it from choosing).
+- a client APK override in `$HOME/abxr/client` (optional).
+
+Set `ABXR_ASSETS_PATH` to use another base folder.
 
 Options (all optional):
 
@@ -100,47 +63,125 @@ abxr-provision --config-package <package.zip> --client <client.apk> --max-parall
 ```
 
 - `--config-package`, `-p`: use this package instead of searching the folder.
-- `--client`, `-c`: use this client APK instead of the package's. It can't be older than the client on the headset.
-- `--max-parallel`, `-n`: how many headsets to provision at once (default 8). On one USB 3 hub, 8 headsets share about 300 MB/s.
-- `--once`: provision the headsets connected now, then exit. It waits up to 60 seconds for "Allow USB debugging" on a headset that asks for it.
+- `--client`, `-c`: use this client APK instead of the package's. It can't be older than the client on the headset; a downgrade would need an uninstall, which loses an HMS headset's enrollment.
+- `--max-parallel`, `-n`: how many headsets to provision at once (default 8). On one USB 3 hub, 8 headsets share about 300 MB/s, so a powered USB 3 hub and good cables matter more than this number. A USB 2 hub caps everything at about 40 MB/s.
+- `--once`: provision the headsets connected now, then exit with status 0 if all succeeded. It waits up to 60 seconds for "Allow USB debugging" on a headset that asks for it.
 - `--device-serial`, `-s`: provision only this headset. Implies `--once`.
 - `--force-upgrade`, `-f`: reinstall the client even when the versions match.
-- `--list-connected-devices`, `-l`: list the ready headsets and exit.
+- `--package-only`, `-o`: load the package onto a headset that's already set up, without touching the client.
+- `--list-connected-devices`, `-l`: list the headsets that are ready (authorized) and exit.
 
-Every log line starts with the headset's serial. On the Field Provisioning Device, the display shows a running summary (running, queued, done, failed, waiting for Allow).
+## Meta Quest with HMS: start to finish
 
-### How a headset is provisioned (same as the ArborXR Device Setup App)
+Meta only enrolls a Quest into an MDM during its first-time setup, through Meta Horizon managed services. The recommended station for HMS headsets:
+
+1. **In ArborXR, make two groups:**
+   - A **staging** group with Developer mode on, no content, and a Home banner or background that says the headset isn't ready.
+   - The **final** group your headsets ship in, with Developer mode off.
+2. **Enrollment file:** download the HMS enrollment file from the staging group and add it as a third-party enrollment in Meta's Device Manager.
+3. **Build the package:** build the configuration package from the final group in the ArborXR portal and put it in `configuration-packages`.
+4. **Enroll with Meta's tool:** enroll new or factory-reset headsets with Meta's Horizon Device Setup app (fastboot), into the staging enrollment. Tap "Accept and continue" on ArborXR's consent screen during setup; declining factory-resets the headset. Each headset comes up in Shared Mode with the ArborXR client, in the staging group, with USB debugging on.
+5. **Provision:** keep the headsets plugged into the hub and run `abxr-provision`.
+   - Tap "Allow USB debugging" (and "Always allow from this computer") on each headset.
+   - The tool loads the package over USB, and each headset moves into the final group with nothing left to download.
+   - Developer mode turns off as the headset joins the final group.
+6. **Before packing,** check in the portal that the staging group is empty.
+
+## How a headset is provisioned
 
 The ArborXR Device Setup App is the source of truth, because customers use it today. `abxr-provision` follows its steps in the same order:
 
 1. On a headset that already has the client, remove the launcher.
 2. Install the package's client and launcher. A refused downgrade is ignored, so a newer client on the headset is kept.
 3. Start the client.
-4. Grant `REQUEST_INSTALL_PACKAGES` and make the client the device owner. This is skipped when the client already owns the headset, as it always does after HMS enrollment. If another MDM owns it, the run stops.
+4. Grant `REQUEST_INSTALL_PACKAGES` and make the client the device owner. This is skipped when the client already owns the headset, as it always does after HMS enrollment. If another MDM owns it, the run stops: factory reset the headset and enroll it again.
 5. Wipe the client's data if it was already installed, so it enrolls into the package's group.
 6. Install the apps and push the OBBs, files, videos and images to the Device Setup App's paths.
-7. Push `settings.json` to `/sdcard/Setup/` and send the client `BootstrapViaJsonFile`. The client applies the package's configurations and enrolls with its token.
+7. Push `settings.json` to `/sdcard/Setup/` and send the client `BootstrapViaJsonFile`. The client applies the package's configurations, treats the content just loaded as installed, and enrolls with the package's token.
 
-**Talking to the client:** commands go through the client's `AdbService`, as in the Device Setup App. The tool starts the service, checks that the client took the command, and follows the client's log until the command reports `DONE`. An `ERROR`, or no `DONE` within 20 seconds, counts as a failure. A failed command is retried 3 times, with the client restarted in between.
+**Talking to the client:** commands go through the client's `AdbService`, as in the Device Setup App:
+- The tool starts the service, checks that the client took the command, and follows the client's log until the command reports `DONE`.
+- An `ERROR`, or no `DONE` within 20 seconds, counts as a failure.
+- A failed command is retried 3 times, with the client restarted in between.
 
-**When a run fails:** if steps 2–6 fail, the tool wipes the client and removes the launcher, like the Device Setup App, so the headset can't be shipped looking enrolled. Re-run it. Failures in step 1, in step 7, or in bad input such as a wrong `--client` path aren't cleaned up, also like the Device Setup App. Afterwards, sleep and Guardian come back on, and a VIVE Flow on firmware older than 1.98.8888.01 reboots, as in the Device Setup App's last step. Google Play Protect and the client's environment file aren't touched, because the Device Setup App's v2 flow leaves them alone too.
+**When a run fails:**
+- **Steps 2–6:** the tool wipes the client and removes the launcher, like the Device Setup App, so the headset can't be shipped looking enrolled. Re-run it.
+- **Not cleaned up:** failures in step 1, in step 7, or in bad input such as a wrong `--client` path, also like the Device Setup App.
+- **Afterwards:** sleep and Guardian come back on. A VIVE Flow on firmware older than 1.98.8888.01 reboots, as in the Device Setup App's last step.
+- **Not touched:** Google Play Protect and the client's environment file, because the Device Setup App's v2 flow leaves them alone too.
 
-**Meta Quest headsets enrolled through Horizon managed services (HMS):**
+**Meta Quest headsets enrolled through HMS:**
 - **HMS is detected** through Meta's OEMConfig provider (`content://com.oculus.oemconfig.provider/managed`) and logged.
-- **The client is never uninstalled and device ownership is never removed.** It re-provisions with `WipeClient`. The client keeps HMS's one-time provisioning record through a wipe (client CL-1355), but not through an uninstall.
+- **The client is never uninstalled and device ownership is never removed.** Re-provisioning uses `WipeClient`. The client keeps HMS's one-time provisioning record through a wipe (client CL-1355), but not through an uninstall.
 - **A client you choose must install.** A `/client` override or `--force-upgrade` that's older than the headset's client is refused before anything on the headset changes.
 
-The headset needs USB debugging on (turn on Developer mode in the ArborXR group it enrolled into) and "Allow USB debugging" accepted on the headset.
+## Limits
 
-## Running the tests
+- **Temp files:** each file in the package is copied to a temporary file before it's pushed, one file at a time. The computer needs free space for the largest single file in the package (twice the size of an app bundle zip), not for the whole package. Packages aren't streamed straight to the headset yet.
+- **Speed:** throughput is set by USB. One headset on its own cable takes about 37 MB/s, so 70 GB takes roughly 30 minutes.
+- **Interruptions:** a run that's stopped or unplugged partway isn't finished. Re-run that headset.
+
+## Field Provisioning Device (FPD)
+
+The ArborXR Field Provisioning Device is a headless computer that runs `abxr-provision` without a laptop.
+
+### Hardware Information
+
+The supported hardware is a Raspberry Pi Zero 2 W running Raspberry Pi OS 64-bit. The base image has custom changes to support dual-mode USB (host and gadget). They aren't well documented yet, and should be captured in code so they can be applied to a fresh image.
+
+`device_start.sh` is launched by `systemd` to start the tool on the FPD. It reads a GPIO to tell whether the selector switch is in "Setup" or "Provision" mode.
+
+### Setup Mode
+
+With the selector switch in "Setup" mode, connect the FPD to a computer. It shows up as a mass storage device, with this structure:
+
+```
+/configuration-packages
+```
+Configuration packages, one per device model. Two packages for the same model stop the tool from choosing.
+
+```
+/client
+```
+(Optional) A client APK to use instead of the package's, for example a newer build. It can't be older than the client on the headset.
+
+```
+field-provisioning-tools-update.zip
+```
+A tool update. It's applied the next time the FPD boots into "Provision" mode, then deleted.
+
+### Provision Mode
+
+With the selector switch in "Provision" mode, the FPD runs `abxr-provision` as a station. It provisions every headset plugged into it with the package that matches its model, several at once, and shows a running summary on its display. Each headset is provisioned once until it's unplugged.
+
+XR devices need USB power injection, because the FPD can't supply enough current. Use the included wall outlet and connector.
+
+## Development
+
+1. Clone the repository.
+2. Create and activate a virtual environment:
+    ```sh
+    python3 -m venv venv
+    source venv/bin/activate  # On Windows use `venv\Scripts\activate`
+    ```
+3. Install the dependencies:
+    ```sh
+    pip install -r requirements.txt
+    pip install -e .
+    ```
+
+### Running the tests
 
 ```sh
 python3 -m unittest discover -s tests
 ```
 
-## Building a update package for the provisioning hardware
+The tests don't need a headset or adb. They cover package parsing and device paths, the HMS and device-owner checks, the Device Setup App's step order and cleanup, the client command protocol, and the station's parallel runs.
+
+### Building an update package for the FPD
 
 ```sh
 build_update_package.sh
 ```
-This will package the project into a zip archive called `field-provisioning-tools-update.zip` that can be placed in the root directory of the HW provisioning device when mounted in "Setup Mode". When the device is booted back in provisioning mode, the update will automatically be applied.
+
+This packages the project into `field-provisioning-tools-update.zip`. Put it in the root of the FPD while it's mounted in "Setup" mode, and it's applied when the FPD boots back into "Provision" mode.
