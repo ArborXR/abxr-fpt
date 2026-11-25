@@ -211,7 +211,7 @@ python3 -m unittest discover -s tests
 
 The tests don't need a headset or adb. They cover package parsing and device paths, the HMS and device-owner checks, the Device Setup App's step order and cleanup, the client command protocol, the disk space checks, and the station's parallel runs.
 
-GitHub Actions runs them on every pull request and on pushes to `main`, on Python 3.9 (the minimum) and on the latest Python 3, after installing the package and checking that `abxr-provision` starts (`.github/workflows/tests.yml`).
+GitHub Actions runs them on every pull request and on pushes to `main`, on Python 3.9 (the minimum) and 3.14. It installs the package first, then checks from outside the checkout that `abxr-provision` and `abxr-display-setup-mode` load (`.github/workflows/tests.yml`).
 
 ### Building an update package for the FPD
 
