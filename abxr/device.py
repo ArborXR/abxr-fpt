@@ -14,7 +14,8 @@ import zipfile
 from abxr.apk import get_package_name
 
 from abxr.configuration_package import AbxrClientApk, ConfigurationPackage
-from abxr.device_commands import BootsrapViaAuthenticationToken, BootstrapViaJsonFile, RemoveDeviceOwnership, WipeClient
+from abxr.device_commands import BootstrapViaJsonFile, RemoveDeviceOwnership, WipeClient
+from abxr.device_policy import CLIENT_ADMIN_RECEIVER, is_client_admin, parse_device_owner, parse_is_hms
 
 # create custom exception for apk install failure
 class DeviceInstallException(Exception):
@@ -314,11 +315,11 @@ class Device:
 
 
     def send_configuration_package(self, config_pkg):
-        if not type(config_pkg) == ConfigurationPackage:
-            raise Exception("You must provide a ConfigurationPackage object.")
-        
-        if type(config_pkg) == str|Path:
+        if isinstance(config_pkg, (str, Path)):
             config_pkg = ConfigurationPackage(config_pkg)
+
+        if not isinstance(config_pkg, ConfigurationPackage):
+            raise Exception("You must provide a ConfigurationPackage object.")
 
         if config_pkg.is_xrdm2:
             client_settings_file_location = "/sdcard/Setup/settings.json"
@@ -335,43 +336,18 @@ class Device:
                 item = config_pkg.extract_item(obb_packaged_app, extract_path)
                 self.install_apk_obb_package(item)
 
-        for file in config_pkg.files:
+        # Loose OBBs, files, videos, images and launcher media, to the same paths the Device Setup App uses.
+        for entry, device_path in config_pkg.pushes():
             with tempfile.TemporaryDirectory() as extract_path:
-                item = config_pkg.extract_item(file, extract_path)
-                target_file_location = file.split("/files")[-1]
-                if target_file_location.startswith("/~"):
-                    target_file_location = target_file_location.split("/~")[-1]
-           
-                self.push_file(item, target_file_location)
+                item = config_pkg.extract_item(entry, extract_path)
+                self.push_file(item, device_path)
 
-        for video in config_pkg.videos:
-            with tempfile.TemporaryDirectory() as extract_path:
-                item = config_pkg.extract_item(video, extract_path)
-                target_file_location = video.split("/videos")[-1]
-                if target_file_location.startswith("/~"):
-                    target_file_location = target_file_location.split("/~")[-1]
-                    
-                self.push_file(item, f"/sdcard/ArborXR/videos{target_file_location}")
+        # Write settings.json to a closed file: on Windows adb can't read a NamedTemporaryFile that's still open.
+        with tempfile.TemporaryDirectory() as settings_dir:
+            settings_path = Path(settings_dir) / "settings.json"
+            settings_path.write_bytes(config_pkg.read_settings_json_from_zip())
+            self.push_file(settings_path, client_settings_file_location)
 
-        for launcher_media in config_pkg.launcher_media:
-            with tempfile.TemporaryDirectory() as extract_path:
-                item = config_pkg.extract_item(launcher_media, extract_path)
-                target_file_location = launcher_media.split("/launcher-media")[-1]
-                self.push_file(item, f"/sdcard/launcher-media{target_file_location}")
-
-        # Config package v2 only
-        for images in config_pkg.images:
-            with tempfile.TemporaryDirectory() as extract_path:
-                item - config_pkg.extract_item(images, extract_path)
-                target_file_location = images.split("/images")[-1]
-                self.push_file(item, f"/sdcard/ArborXR/Media{target_file_location}")
-        
-
-        with tempfile.NamedTemporaryFile() as f:
-            f.write(config_pkg.read_settings_json_from_zip())
-            f.flush()
-            self.push_file(f.name, client_settings_file_location)
-        
         if config_pkg.is_xrdm2:
             command = BootstrapViaJsonFile(client_settings_file_location)
             command_json = json.dumps(command.to_dict())
@@ -396,8 +372,33 @@ class Device:
         if proc.returncode:
             raise Exception(f"Failed to reboot device {self.serial}")
 
+    def device_owner(self):
+        """The device owner's component, or None. Same check as the Device Setup App."""
+        proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "-t", "3", "device_policy"], capture_output=True, text=True)
+        if proc.returncode:
+            return None
+        return parse_device_owner(proc.stdout)
+
+    def is_hms(self):
+        """Whether the headset is managed through Meta Horizon managed services (HMS)."""
+        if not self.is_quest():
+            return False
+        proc = subprocess.run(["adb", "-s", self.serial, "shell", "content", "query", "--uri", "content://com.oculus.oemconfig.provider/managed"], capture_output=True, text=True)
+        if proc.returncode:
+            return False
+        return parse_is_hms(proc.stdout)
+
     def set_device_owner(self):
-        proc = subprocess.run(["adb", "-s", self.serial, "shell", "dpm", "set-device-owner", "app.xrdm.client/.AdminReceiver"], capture_output=True, text=True)
+        owner = self.device_owner()
+        if is_client_admin(owner):
+            # HMS headsets, and headsets provisioned before: our client already owns the device, and
+            # `dpm set-device-owner` would fail.
+            print(f"Device {self.serial} is already owned by the ArborXR client.")
+            return
+        if owner:
+            raise DeviceSetDeviceOwnerException(f"Device {self.serial} is managed by {owner}. Factory reset it, then enroll it (through HMS on Meta Quest) before provisioning.")
+
+        proc = subprocess.run(["adb", "-s", self.serial, "shell", "dpm", "set-device-owner", CLIENT_ADMIN_RECEIVER], capture_output=True, text=True)
         if proc.returncode:
             if "Not allowed to set the device owner because there are already some accounts on the device" in proc.stderr:
                 if self.is_quest():
@@ -422,7 +423,14 @@ class Device:
         if proc.returncode:
             raise DeviceSetEnvironmentException("Failed to set production environment.")
 
+    def _refuse_on_hms(self, action):
+        # HMS records how the headset was provisioned only at enrollment. Our client keeps it through a
+        # WipeClient (client CL-1355), but removing device ownership or uninstalling the client loses it.
+        if self.is_hms():
+            raise DeviceRemoveDeviceOwnerException(f"Not allowed to {action} on HMS headset {self.serial}. Use WipeClient instead.")
+
     def remove_device_owner(self):
+        self._refuse_on_hms("remove device ownership")
         proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "broadcast", "-n", "app.xrdm.client/.AdminRemover", "-a", "REMOVE_DEVICE_OWNER"])
         max_wait_sec = 10
         wait_sec = 0
@@ -450,6 +458,7 @@ class Device:
         print("Client data wiped.")
 
     def remove_device_owner_v2(self):
+        self._refuse_on_hms("remove device ownership")
         command = RemoveDeviceOwnership()
         command_json = json.dumps(command.to_dict())
 
@@ -470,43 +479,35 @@ class Device:
         raise DeviceRemoveDeviceOwnerException("Failed to remove device owner.")
 
     def uninstall_apk(self, package_name):
+        if package_name == AbxrClientApk.PACKAGE_NAME:
+            self._refuse_on_hms("uninstall the ArborXR client")
         proc = subprocess.run(["adb", "-s", self.serial, "uninstall", package_name], capture_output=True, text=True)
         if proc.returncode:
             raise DeviceUninstallException(f"Failed to uninstall {package_name} on device {self.serial} - {proc.stderr}")
 
     def configure_api_token_authentication(self, config_pkg):
-        if not type(config_pkg) == ConfigurationPackage:
-            raise Exception("You must provide a ConfigurationPackage object.")
-        
-        if type(config_pkg) == str|Path:
+        """XRDM 1 packages only. A v2 package enrolls from settings.json (BootstrapViaJsonFile), as in the Device
+        Setup App."""
+        if isinstance(config_pkg, (str, Path)):
             config_pkg = ConfigurationPackage(config_pkg)
 
+        if not isinstance(config_pkg, ConfigurationPackage):
+            raise Exception("You must provide a ConfigurationPackage object.")
+
+        if config_pkg.is_xrdm2:
+            return
+
         settings = config_pkg.settings
+        api_token_auth = {
+            "apiToken": settings["apiToken"],
+            "deviceGroup": {"id": settings["deviceGroup"]["id"]},
+        }
+        api_token_auth_json = json.dumps(api_token_auth)
 
-        if settings.is_xrdm2:
-            token = settings["token"]
-            group = settings["group"]
-            configurations = settings["configurations"]
+        proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "broadcast", "-n", "app.xrdm.client/.SetupDeviceReceiver", "-a", "CONFIGURE_API_TOKEN", "-e", "ApiTokenAuth", f"'''{api_token_auth_json}'''"])
+        if proc.returncode:
+            raise DeviceConfigureApiTokenException("Failed to configure device with API token authentication.")
 
-            command = BootsrapViaAuthenticationToken(token, group, configurations)
-
-            command_json = json.dumps(command.to_dict())
-
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "activity", "service", "xrdm.adb.AdbService",  f"'''{command_json}'''"])
-
-            if proc.returncode:
-                raise DeviceConfigurationObjectException("Failed to configuration device with object from config package")
-        else:
-            api_token_auth = {}
-            api_token_auth["apiToken"] = settings["apiToken"]
-            api_token_auth["deviceGroup"] = {}
-            api_token_auth["deviceGroup"]["id"] = settings["deviceGroup"]["id"]
-            api_token_auth_json = json.dumps(api_token_auth)
-
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "broadcast", "-n", "app.xrdm.client/.SetupDeviceReceiver", "-a", "CONFIGURE_API_TOKEN", "-e", "ApiTokenAuth", f"'''{api_token_auth_json}'''"])
-            if proc.returncode:
-                raise DeviceConfigureApiTokenException("Failed to configure device with API token authentication.")
-            
     def get_installed_version(self, package_name):
         result = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "package", package_name], capture_output=True, text=True)
         if result.returncode != 0:

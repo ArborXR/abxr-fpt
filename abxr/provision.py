@@ -182,29 +182,39 @@ def provision(args):
 
                         device.set_google_play_protect(False)
 
-                        #
-                        # if we need to replace the client OR fresh provision    
-                        #
-                        if device.abxr_client_version() != client_apk.version or args.force_upgrade:
-                            if device.is_packaged_installed(AbxrClientApk.PACKAGE_NAME):
-                                if package.is_xrdm2:
-                                    device.wipe_client()
-                                else:
-                                    device.remove_device_owner()
-                                    device.uninstall_apk(AbxrClientApk.PACKAGE_NAME)
-                            
+                        is_hms = device.is_hms()
+                        if is_hms:
+                            print(f"Device {device} is enrolled through Meta Horizon managed services (HMS).")
+
+                        installed_version = device.abxr_client_version()
+                        needs_client_install = installed_version != client_apk.version or args.force_upgrade
+
+                        if installed_version is not None:
+                            if package.is_xrdm2:
+                                # Like the Device Setup App: always wipe an installed client's data before loading
+                                # a package, so it enrolls into the package's group. Never uninstall it: on HMS
+                                # headsets the client keeps the HMS provisioning record through a wipe (client
+                                # CL-1355), but not through an uninstall.
+                                device.wipe_client()
+                            elif needs_client_install:
+                                device.remove_device_owner()
+                                device.uninstall_apk(AbxrClientApk.PACKAGE_NAME)
+
+                        if needs_client_install:
                             device.install_apk(client_apk.path)
 
                             if device.abxr_client_version() != client_apk.version:
                                 print(f"Failed to install ArborXR Client APK on {device}")
                                 display.write("Failed to install ArborXR Client APK", wait=5)
                                 continue
-
-                            device.set_device_owner()
-                            device.set_production_environment()    
-                                
                         else:
                             print(f"Device {device} already has the expected ArborXR Client APK version {client_apk.version}")
+
+                        # A no-op when our client already owns the device, which is always true on HMS headsets.
+                        device.set_device_owner()
+
+                        if needs_client_install:
+                            device.set_production_environment()
 
                     if package.launcher_apk:
                         if device.is_packaged_installed(AbxrLauncherApk.PACKAGE_NAME):
@@ -213,7 +223,7 @@ def provision(args):
 
                     device.send_configuration_package(package)
 
-                    if not args.package_only:
+                    if not args.package_only and not package.is_xrdm2:
                         device.configure_api_token_authentication(package)
 
                 display.write(["Device provisioned!", device.serial], wait=2)
