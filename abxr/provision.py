@@ -20,11 +20,11 @@ from abxr.device import Device, \
                         DeviceUninstallException, \
                         DeviceConfigureException, \
                         DeviceSetDeviceOwnerException, \
-                        DeviceSetEnvironmentException, \
                         DeviceGrantPermissionException, \
                         DeviceClientDowngradeException, \
                         DeviceWipeClientException
-from abxr.client_setup import clean_up_after_failure, prepare_client
+from abxr.client_setup import SetupProgress, clean_up_after_failure, prepare_client
+from abxr.device_policy import is_older_firmware
 from abxr.display import display
 from abxr.version import version
 
@@ -36,6 +36,13 @@ CLIENT_OVERRIDE_PATH = ASSETS_PATH / Path("client")
 usb_event_handled = 0
 usb_semaphore = Semaphore(0)
 hotplug = False
+
+def complete_setup(device):
+    """The Device Setup App's CompleteSetup: sleep and Guardian come back on in the `finally` below; a VIVE Flow on
+    firmware older than 1.98.8888.01 reboots, so the Holoride app doesn't auto-launch after setup."""
+    if device.is_vive_flow() and is_older_firmware(device.firmware_version, "1.98.8888.01"):
+        device.reboot()
+
 
 def get_client_apk_override(args):
     if args.client:
@@ -181,23 +188,25 @@ def provision(args):
 
             try:
                 with tempfile.TemporaryDirectory() as tempdir:
+                    # Resolve inputs before touching the headset: a bad --client path or package fails here, with
+                    # no cleanup, as in the Device Setup App.
                     launcher_apk_path = package.extract_item(package.launcher_apk, tempdir) if package.launcher_apk else None
+                    if not args.package_only:
+                        client_override = get_client_apk_override(args)
+                        client_apk = client_override or package.extract_client_apk_from_zip(tempdir)
+                        operator_chose_client = client_override is not None or args.force_upgrade
 
-                    # The Device Setup App's setup steps: on a failure here, clean up like it does.
+                        print("Using ArborXR client APK:", client_apk.path)
+                        display.write(["Provisioning device:", device.model_name, device.serial, f"XRDM: {client_apk.version}"])
+
+                    # The Device Setup App's setup steps (InstallDependencies). On a failure, clean up like it does.
+                    progress = SetupProgress()
                     try:
                         if not args.package_only:
-                            client_override = get_client_apk_override(args)
-                            client_apk = client_override or package.extract_client_apk_from_zip(tempdir)
-                            operator_chose_client = client_override is not None or args.force_upgrade
-
-                            print("Using ArborXR client APK:", client_apk.path)
-                            display.write(["Provisioning device:", device.model_name, device.serial, f"XRDM: {client_apk.version}"])
-
                             if device.is_quest():
+                                progress.step = "disabling-sleep"
                                 device.set_quest_sleep_enabled(False)
                                 device.set_quest_guardian_enabled(False)
-
-                            device.set_google_play_protect(False)
 
                             is_hms = device.is_hms()
                             if is_hms:
@@ -205,24 +214,25 @@ def provision(args):
                             elif is_hms is None:
                                 print(f"Couldn't tell whether device {device} is enrolled through HMS.")
 
-                            prepare_client(device, client_apk, launcher_apk_path, operator_chose_client=operator_chose_client)
+                            prepare_client(device, client_apk, launcher_apk_path, operator_chose_client=operator_chose_client, progress=progress)
                         elif launcher_apk_path:
                             if device.is_packaged_installed(AbxrLauncherApk.PACKAGE_NAME):
                                 device.uninstall_apk(AbxrLauncherApk.PACKAGE_NAME)
                             device.install_apk(launcher_apk_path)
 
+                        progress.step = "installing-content"
                         device.push_content(package)
                     except DeviceClientDowngradeException:
-                        # Refused before anything on the headset changed (or by adb, leaving the client as it was).
+                        # Refused before the client changed; the launcher was put back.
                         raise
                     except Exception:
-                        if not args.package_only:
+                        if not args.package_only and progress.should_clean_up():
                             clean_up_after_failure(device, has_launcher=launcher_apk_path is not None)
                         raise
 
-                    # Bootstrap from the package, as in the Device Setup App's BootstrapFromPackage. Like it, no
-                    # cleanup when this fails.
+                    # BootstrapFromPackage, then CompleteSetup. Like the Device Setup App, no cleanup if these fail.
                     device.hand_off_settings(package)
+                    complete_setup(device)
 
                 display.write(["Device provisioned!", device.serial], wait=2)
                         
@@ -248,10 +258,6 @@ def provision(args):
                 print(f"Failed to set device owner: {e}")
                 display.write("Failed to set device owner", wait=5)
 
-            except DeviceSetEnvironmentException as e:
-                print(f"Failed to set environment: {e}")
-                display.write("Failed to set environment", wait=5)
-
             except DeviceConfigureException as e:
                 print(f"Failed to configure device: {e}")
                 display.write("Failed to configure device", wait=5)
@@ -265,7 +271,6 @@ def provision(args):
                     device.set_quest_sleep_enabled(True)
                     device.set_quest_guardian_enabled(True)
                 
-                device.set_google_play_protect(True)
 
                 elapsed_time_sec = time.time() - timer
                 elapsed_time_min = elapsed_time_sec // 60

@@ -1,6 +1,6 @@
 import unittest
 
-from abxr.device_policy import is_client_admin, is_downgrade_error, is_newer_version, parse_command_id, parse_command_progress, parse_device_owner, parse_is_hms, parse_service_result
+from abxr.device_policy import is_client_admin, is_downgrade_error, is_newer_version, is_older_firmware, parse_command_id, parse_command_progress, parse_device_owner, parse_is_hms, parse_service_result
 
 DUMPSYS_OWNED_BY_CLIENT = """Current Device Policy Manager state:
   Immutable state:
@@ -67,6 +67,12 @@ class DevicePolicyTest(unittest.TestCase):
         self.assertFalse(is_newer_version("2026.9.0", "2026.10.0"))
         self.assertFalse(is_newer_version(None, "2026.47.0"))
         self.assertFalse(is_newer_version("2026.48.0-dev", "2026.47.0"))
+
+    def test_compares_vive_flow_firmware(self):
+        self.assertTrue(is_older_firmware("1.97.1234.01", "1.98.8888.01"))
+        self.assertFalse(is_older_firmware("1.98.8888.01", "1.98.8888.01"))
+        self.assertFalse(is_older_firmware("2.03.623.01", "1.98.8888.01"))
+        self.assertFalse(is_older_firmware("unknown", "1.98.8888.01"))
 
     def test_recognises_a_client_downgrade(self):
         self.assertTrue(is_downgrade_error("adb: failed to install c.apk: Failure [INSTALL_FAILED_VERSION_DOWNGRADE: Downgrade detected]"))

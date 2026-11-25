@@ -7,17 +7,18 @@ try:
 except ImportError:
     sys.modules["abxr.apk"] = types.SimpleNamespace(get_package_name=lambda path: None)
 
-from abxr.client_setup import clean_up_after_failure, prepare_client  # noqa: E402
+from abxr.client_setup import CLEANING_UP_DEPENDENCIES, SetupProgress, clean_up_after_failure, prepare_client  # noqa: E402
 from abxr.device import DeviceClientDowngradeException  # noqa: E402
 
 LAUNCHER = "app.xrdm.launcher"
 
 
 class FakeDevice:
-    def __init__(self, client_version, launcher_installed=False, install_result=True):
+    def __init__(self, client_version, launcher_installed=False, install_result=True, uninstall_error=None):
         self.version = client_version
         self.launcher_installed = launcher_installed
         self.install_result = install_result
+        self.uninstall_error = uninstall_error
         self.calls = []
 
     def __str__(self):
@@ -44,6 +45,8 @@ class FakeDevice:
 
     def uninstall_apk(self, package_name):
         self.calls.append(("uninstall", package_name))
+        if self.uninstall_error:
+            raise self.uninstall_error
 
     def start_client_app(self):
         self.calls.append("start_client_app")
@@ -57,9 +60,6 @@ class FakeDevice:
     def remove_device_owner(self):
         self.calls.append("remove_device_owner")
 
-    def set_production_environment(self):
-        self.calls.append("set_production_environment")
-
 
 class FakeApk:
     def __init__(self, version):
@@ -70,8 +70,8 @@ class FakeApk:
 LAUNCHER_APK = "app.xrdm.launcher-2026.40.1"
 
 
-def prepare(device, version, launcher=None, chose=False):
-    return prepare_client(device, FakeApk(version), launcher, operator_chose_client=chose)
+def prepare(device, version, launcher=None, chose=False, progress=None):
+    return prepare_client(device, FakeApk(version), launcher, operator_chose_client=chose, progress=progress)
 
 
 class PrepareClientTest(unittest.TestCase):
@@ -89,7 +89,6 @@ class PrepareClientTest(unittest.TestCase):
                 "start_client_app",
                 "set_device_owner",
                 "wipe_client",
-                "set_production_environment",
             ],
             device.calls,
         )
@@ -120,6 +119,34 @@ class PrepareClientTest(unittest.TestCase):
         with self.assertRaises(DeviceClientDowngradeException):
             prepare(device, "2026.40.0", chose=True)
         self.assertNotIn("wipe_client", device.calls)
+
+    def test_launcher_is_only_removed_on_a_reinstall(self):
+        device = FakeDevice(None, launcher_installed=True)
+        prepare(device, "2026.47.0", launcher=LAUNCHER_APK)
+        self.assertNotIn(("uninstall", LAUNCHER), device.calls)
+
+    def test_refused_chosen_client_puts_the_launcher_back(self):
+        device = FakeDevice("2026.48.0-rc.1", launcher_installed=True, install_result=DeviceClientDowngradeException("newer"))
+        with self.assertRaises(DeviceClientDowngradeException):
+            prepare(device, "2026.47.1", launcher=LAUNCHER_APK, chose=True)
+        self.assertEqual(
+            [("uninstall", LAUNCHER), ("install", "app.xrdm.client-2026.47.1", False), ("install", LAUNCHER_APK, True)],
+            device.calls,
+        )
+
+    def test_no_cleanup_when_the_launcher_cleanup_itself_fails(self):
+        progress = SetupProgress()
+        device = FakeDevice("2026.45.0", launcher_installed=True, uninstall_error=Exception("adb"))
+        with self.assertRaises(Exception):
+            prepare(device, "2026.47.0", launcher=LAUNCHER_APK, progress=progress)
+        self.assertEqual(CLEANING_UP_DEPENDENCIES, progress.step)
+        self.assertFalse(progress.should_clean_up())
+
+    def test_cleanup_once_a_later_step_fails(self):
+        progress = SetupProgress()
+        self.assertFalse(progress.should_clean_up())
+        progress.step = "installing-dependencies"
+        self.assertTrue(progress.should_clean_up())
 
     def test_failure_cleanup_wipes_and_removes_the_launcher_but_never_uninstalls_the_client(self):
         device = FakeDevice("2026.47.0", launcher_installed=True)

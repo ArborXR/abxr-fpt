@@ -90,6 +90,19 @@ def is_newer_version(installed_version, target_version):
     return tuple(map(int, installed_version.split("."))) > tuple(map(int, target_version.split(".")))
 
 
+def is_older_firmware(firmware_version, threshold):
+    """Whether a dotted firmware version (e.g. "1.97.1234.01") is older than the threshold. False when it can't be
+    read, so a check that needs it is skipped."""
+    def parse(version):
+        try:
+            return tuple(int(part) for part in str(version).split("."))
+        except ValueError:
+            return None
+
+    firmware, minimum = parse(firmware_version), parse(threshold)
+    return firmware is not None and minimum is not None and firmware < minimum
+
+
 def is_downgrade_error(adb_install_output):
     """Whether `adb install` failed because the APK is older than the installed version."""
     return "INSTALL_FAILED_VERSION_DOWNGRADE" in adb_install_output.upper()

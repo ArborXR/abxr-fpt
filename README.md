@@ -102,7 +102,7 @@ All of the command line switches are optional, and can be used interchangably. T
 
 The ArborXR Device Setup App is the source of truth, because customers use it today. `abxr-provision` follows its steps in the same order:
 
-1. Remove the launcher.
+1. On a headset that already has the client, remove the launcher.
 2. Install the package's client and launcher. A refused downgrade is ignored, so a newer client on the headset is kept.
 3. Start the client.
 4. Grant `REQUEST_INSTALL_PACKAGES` and make the client the device owner. This is skipped when the client already owns the headset, as it always does after HMS enrollment. If another MDM owns it, the run stops.
@@ -112,7 +112,7 @@ The ArborXR Device Setup App is the source of truth, because customers use it to
 
 **Talking to the client:** commands go through the client's `AdbService`, as in the Device Setup App. The tool starts the service, checks that the client took the command, and follows the client's log until the command reports `DONE`. An `ERROR`, or no `DONE` within 20 seconds, counts as a failure. A failed command is retried 3 times, with the client restarted in between.
 
-**When a run fails:** if steps 1–6 fail, the tool wipes the client and removes the launcher, like the Device Setup App, so the headset can't be shipped looking enrolled. Re-run it. A failure in step 7 isn't cleaned up, also like the Device Setup App.
+**When a run fails:** if steps 2–6 fail, the tool wipes the client and removes the launcher, like the Device Setup App, so the headset can't be shipped looking enrolled. Re-run it. Failures in step 1, in step 7, or in bad input such as a wrong `--client` path aren't cleaned up, also like the Device Setup App. Afterwards, sleep and Guardian come back on, and a VIVE Flow on firmware older than 1.98.8888.01 reboots, as in the Device Setup App's last step. Google Play Protect and the client's environment file aren't touched, because the Device Setup App's v2 flow leaves them alone too.
 
 **Meta Quest headsets enrolled through Horizon managed services (HMS):**
 - **HMS is detected** through Meta's OEMConfig provider (`content://com.oculus.oemconfig.provider/managed`) and logged.

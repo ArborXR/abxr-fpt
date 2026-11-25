@@ -37,9 +37,6 @@ class DeviceConfigureException(Exception):
 class DeviceSetDeviceOwnerException(Exception):
     pass
 
-class DeviceSetEnvironmentException(Exception):
-    pass
-
 class DeviceClientDowngradeException(DeviceInstallException):
     pass
 
@@ -207,15 +204,6 @@ class Device:
         proc = subprocess.run(["adb", "-s", self.serial, "push", local_file, remote_file])
         if proc.returncode:
             raise DeviceInstallException(f"Failed to push {local_file} to {remote_file} on device {self.serial}")
-        
-    def set_google_play_protect(self, enable):
-        if enable:
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "settings", "put", "global", "verifier_verify_adb_installs", "1", "&&", "settings", "put", "global", "package_verifier_enable", "1"])
-        else:
-            proc = subprocess.run(["adb", "-s", self.serial, "shell", "settings", "put", "global", "verifier_verify_adb_installs", "0", "&&", "settings", "put", "global", "package_verifier_enable", "0"])
-        
-        if proc.returncode:
-            raise Exception("Failed to toggle Google Play Protect.")
         
     def set_quest_sleep_enabled(self, enable):
         if enable:
@@ -449,11 +437,6 @@ class Device:
             else:
                 raise DeviceSetDeviceOwnerException("Failed to set device owner." + proc.stderr)
 
-    def set_production_environment(self):
-        proc = subprocess.run(["adb", "-s", self.serial, "shell", "echo production > /sdcard/.xrdm-environment"])
-        if proc.returncode:
-            raise DeviceSetEnvironmentException("Failed to set production environment.")
-
     def start_client_app(self):
         """Start the client in the foreground, as the Device Setup App does before talking to it."""
         proc = subprocess.run(["adb", "-s", self.serial, "shell", "am", "start", "-n", CLIENT_FINISHING_ACTIVITY], capture_output=True, text=True)
@@ -473,9 +456,18 @@ class Device:
 
     def _wait_for_client_command(self, command_id, timeout_seconds):
         """Follow the client's log for a command until it reports DONE, like the Device Setup App."""
-        proc = subprocess.Popen(["adb", "-s", self.serial, "logcat", "-v", "tag", "-b", "main", f"{command_id}:I", "*:S"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        proc = subprocess.Popen(
+            ["adb", "-s", self.serial, "logcat", "-v", "tag", "-b", "main", f"{command_id}:I", "*:S"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding="utf-8", errors="replace",
+        )
         lines = queue.Queue()
-        threading.Thread(target=lambda: [lines.put(line) for line in proc.stdout], daemon=True).start()
+
+        def read():
+            for line in proc.stdout:
+                lines.put(line)
+            lines.put(None)
+
+        threading.Thread(target=read, daemon=True).start()
         deadline = time.time() + timeout_seconds
         try:
             while time.time() < deadline:
@@ -483,6 +475,9 @@ class Device:
                     line = lines.get(timeout=max(0.1, deadline - time.time()))
                 except queue.Empty:
                     break
+                if line is None:
+                    # Like the Device Setup App: logcat ending (e.g. the headset was unplugged) is a failure now.
+                    raise Exception(f"logcat stopped before command {command_id} finished.")
                 message = parse_command_progress(line, command_id)
                 if message is None:
                     continue
@@ -493,6 +488,7 @@ class Device:
             raise Exception(f"Command {command_id} didn't finish within {timeout_seconds} s.")
         finally:
             proc.kill()
+            proc.wait()
 
     def run_client_command(self, command, exception_class, timeout_seconds=20):
         """Send a command to the client's AdbService the way the Device Setup App does (ExecuteCommand): start the
@@ -504,10 +500,7 @@ class Device:
         for attempt in range(4):
             if attempt:
                 time.sleep(1)
-                try:
-                    self.start_client_app()
-                except DeviceConfigureException as e:
-                    last_error = str(e)
+                self.start_client_app()
             try:
                 self._start_adb_service()
                 proc = subprocess.run(["adb", "-s", self.serial, "shell", "dumpsys", "activity", "service", CLIENT_ADB_SERVICE, f"'''{command_json}'''"], capture_output=True, text=True)
@@ -515,8 +508,9 @@ class Device:
                 if result is None:
                     raise Exception(f"AdbService didn't take the command. {proc.stdout}{proc.stderr}")
                 command_id = parse_command_id(result)
-                if command_id:
-                    self._wait_for_client_command(command_id, timeout_seconds)
+                if not command_id:
+                    raise Exception(f"AdbService didn't report a command id. {result}")
+                self._wait_for_client_command(command_id, timeout_seconds)
                 return result
             except Exception as e:
                 last_error = str(e)
