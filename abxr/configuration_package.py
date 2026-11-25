@@ -3,9 +3,11 @@
 # Released under the MIT License. See LICENSE file for details.
 #
 
+import io
 import json
 import re
 import shutil
+import struct
 import uuid
 from pathlib import Path
 import zipfile
@@ -63,6 +65,38 @@ class AbxrLauncherApk:
         if match:
             return match.group(1)
         return None
+
+
+class _FileWindow(io.RawIOBase):
+    """A read-only, seekable view of part of a file: lets zipfile read a stored zip inside the package by seeking,
+    instead of reading the whole entry the way ZipExtFile.seek does on Python before 3.12."""
+
+    def __init__(self, file, start, size):
+        self._file, self._start, self._size, self._pos = file, start, size, 0
+
+    def readable(self):
+        return True
+
+    def seekable(self):
+        return True
+
+    def tell(self):
+        return self._pos
+
+    def seek(self, offset, whence=io.SEEK_SET):
+        base = {io.SEEK_SET: 0, io.SEEK_CUR: self._pos, io.SEEK_END: self._size}[whence]
+        self._pos = max(0, min(self._size, base + offset))
+        return self._pos
+
+    def readinto(self, buffer):
+        count = min(len(buffer), self._size - self._pos)
+        if count <= 0:
+            return 0
+        self._file.seek(self._start + self._pos)
+        data = self._file.read(count)
+        buffer[:len(data)] = data
+        self._pos += len(data)
+        return len(data)
 
 
 class ConfigurationPackage:
@@ -272,11 +306,21 @@ class ConfigurationPackage:
         """What an app bundle zip unpacks to (its APK and OBBs), read from its own directory. Falls back to the
         bundle's size when it can't be read."""
         if entry not in self._bundle_sizes:
-            try:
-                with self.zip_file.open(entry) as raw, zipfile.ZipFile(raw) as bundle:
-                    size = sum(info.file_size for info in bundle.infolist())
-            except Exception:
-                size = self.entry_size(entry)
+            info = self.zip_file.getinfo(entry)
+            size = info.file_size
+            # Portal packages store entries uncompressed, so the bundle's bytes sit as-is in the package file.
+            if info.compress_type == zipfile.ZIP_STORED:
+                try:
+                    with open(self.path, "rb") as package_file:
+                        package_file.seek(info.header_offset)
+                        header = package_file.read(30)
+                        if header[:4] == b"PK\x03\x04":
+                            name_length, extra_length = struct.unpack("<HH", header[26:30])
+                            start = info.header_offset + 30 + name_length + extra_length
+                            with zipfile.ZipFile(_FileWindow(package_file, start, info.file_size)) as bundle:
+                                size = sum(inner.file_size for inner in bundle.infolist())
+                except Exception:
+                    size = info.file_size
             self._bundle_sizes[entry] = size
         return self._bundle_sizes[entry]
 

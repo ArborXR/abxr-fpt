@@ -179,7 +179,7 @@ class StationTest(unittest.TestCase):
         self.assertTrue(station.is_idle())
         self.assertFalse(station.all_succeeded())
 
-    def test_a_fixed_headset_clears_its_failure_from_the_display(self):
+    def test_a_failure_stays_on_the_display_until_that_headset_succeeds(self):
         outcomes = {"A": [(False, "Install failed"), True]}
         station = self.station(lambda serial, log: outcomes[serial].pop(0))
         station.update([("A", "device")])
@@ -187,6 +187,8 @@ class StationTest(unittest.TestCase):
         self.assertEqual(("A", "Install failed"), station.last_failure)
         self.clock.now += 10
         station.update([])
+        # Unplugged and forgotten, the reason stays on the display until the operator has read it.
+        self.assertEqual(("A", "Install failed"), station.last_failure)
         station.update([("A", "device")])
         station.join(5)
         self.assertIsNone(station.last_failure)

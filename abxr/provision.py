@@ -36,6 +36,8 @@ CLIENT_OVERRIDE_PATH = ASSETS_PATH / Path("client")
 POLL_SECONDS = 2
 # How long --once keeps retrying when adb doesn't answer before it gives up.
 ONCE_ADB_WAIT_SECONDS = 60
+# How long --once waits for a headset to show up before deciding none is connected.
+ONCE_SETTLE_SECONDS = 10
 
 
 def complete_setup(device):
@@ -278,6 +280,7 @@ def provision(args):
     print(f"Provisioning up to {args.max_parallel} headsets at a time. " + ("Press Ctrl+C to stop." if not args.once else ""))
 
     adb_failing_since = None
+    started_at = time.monotonic()
     try:
         while True:
             devices = list_adb_devices()
@@ -285,15 +288,17 @@ def provision(args):
                 if adb_failing_since is None:
                     print("adb didn't answer. Retrying; headsets that are done stay done.")
                     adb_failing_since = time.monotonic()
-                if args.once and time.monotonic() - adb_failing_since >= ONCE_ADB_WAIT_SECONDS:
+                if args.once and not station.running_count() and time.monotonic() - adb_failing_since >= ONCE_ADB_WAIT_SECONDS:
                     print(f"adb didn't answer for {ONCE_ADB_WAIT_SECONDS} seconds. Check that adb works (adb devices).")
                     exit(1)
             else:
                 adb_failing_since = None
             station.update(devices)
             display.write(station.display_lines())
-            # --once decides only on an answer from adb: a failed poll isn't "nothing connected".
-            if args.once and devices is not None and station.is_idle():
+            # --once decides only on an answer from adb: a failed poll isn't "nothing connected". With nothing
+            # provisioned yet, give adb a few seconds to list headsets that were just plugged in.
+            settled = station.finished_count() or time.monotonic() - started_at >= ONCE_SETTLE_SECONDS
+            if args.once and devices is not None and station.is_idle() and settled:
                 if not station.finished_count():
                     print(f"Headset {args.device_serial} isn't connected and ready." if args.device_serial else "No headset was connected and ready.")
                 print(station.summary())

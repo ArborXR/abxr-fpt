@@ -58,7 +58,7 @@ Every log line starts with the headset's serial. On the FPD, the display shows w
 
 Exit status:
 - **`--once` exits 0** when every headset it saw was provisioned.
-- **It exits 1** when any headset failed or was never ready, or when none was connected and ready (with `--device-serial`, when that headset wasn't). It also exits 1 if adb doesn't answer for 60 seconds.
+- **It exits 1** when any headset failed or was never ready, or when none was connected and ready within 10 seconds (with `--device-serial`, when that headset wasn't). It also exits 1 if adb doesn't answer for 60 seconds while no headset is running.
 - **Ctrl+C exits 130.**
 
 By default it looks for:

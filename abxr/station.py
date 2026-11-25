@@ -101,8 +101,6 @@ class Station:
                     del self._states[serial]
                     self._adb_states.pop(serial, None)
                     self._not_ready_since.pop(serial, None)
-                    if self.last_failure and self.last_failure[0] == serial:
-                        self.last_failure = None
 
             for serial, adb_state in devices:
                 if self._only_serial and serial != self._only_serial:
@@ -227,8 +225,10 @@ class Station:
         ]
         if counts[NOT_READY]:
             lines.append(f"Not ready {counts[NOT_READY]}: check"[:21])
-        if self.last_failure:
-            serial, message = self.last_failure
+        with self._lock:
+            failure = self.last_failure
+        if failure:
+            serial, message = failure
             lines.append(f"{serial[-5:]}: {message}"[:21])
         return lines[:4]
 

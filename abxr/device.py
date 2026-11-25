@@ -240,7 +240,9 @@ class Device:
         self.device_sleep(seconds)
 
     def set_package_enabled(self, package_name, enable):
-        action = "enable" if enable else "disable-user"
+        # Inverted on purpose: this mirrors the Device Setup App's SetPackageEnabled (SetupApp.Core/Adb.fs), where
+        # true runs disable-user, and its VIVE Flow account retry relies on that order. Change both together.
+        action = "disable-user" if enable else "enable"
         proc = subprocess.run(["adb", "-s", self.serial, "shell", "pm", action, "--user", "0", package_name], capture_output=True, text=True)
         
         if proc.returncode:
